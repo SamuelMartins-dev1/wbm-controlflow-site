@@ -348,6 +348,34 @@ async function cloudRestPost(table, payload) {
   return await res.json();
 }
 
+async function cloudRestPatch(tableAndQuery, payload) {
+  const token = await ensureCloudAuth();
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${tableAndQuery}`, {
+    method: "PATCH",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(`Cloud PATCH HTTP ${res.status}`);
+  return await res.json();
+}
+
+async function cloudFinalizePendingBridgeCommands(deviceId = null) {
+  try {
+    const devFilter = deviceId ? `&device_id=eq.${encodeURIComponent(deviceId)}` : "";
+    const nowIso = new Date().toISOString();
+    await cloudRestPatch(`commands_log?status=in.(pending,published)${devFilter}`, {
+      status: "confirmed",
+      confirmed_at: nowIso,
+      superseded_at: nowIso
+    });
+  } catch (_) {}
+}
+
 function mapSupabaseCmdToAudit(c) {
   const cmdObj = c.command || {};
   const sm = Number(cmdObj.sm ?? 0);
@@ -675,21 +703,43 @@ async function cloudSendCommand(body) {
     }
   } catch (_) {}
 
+  // Antes de inserir um novo comando na fila da bridge, finaliza qualquer comando anterior em 'published'/'pending'
+  // desse dispositivo para que a bridge externa do Lovable NUNCA fique reenviando infinitamente a cada 20s!
+  await cloudFinalizePendingBridgeCommands(targetBridgeDeviceId);
+
   const inserted = await cloudRestPost("commands_log", {
     device_id: targetBridgeDeviceId,
     command: { ed, md, sm },
     requested_by: cloudEngine.userId,
     status: "pending"
   });
+  const cmdId = inserted?.[0]?.id;
+
+  // Assim que a bridge publicar o comando no MQTT (~6s), marca-o como finalizado na fila da bridge
+  // para que o controle de número de tentativas (ex: 3 envios) seja feito exclusivamente pelo nosso Bot!
+  if (cmdId) {
+    setTimeout(async () => {
+      try {
+        const nowIso = new Date().toISOString();
+        await cloudRestPatch(`commands_log?id=eq.${cmdId}&status=eq.published`, {
+          status: "confirmed",
+          confirmed_at: nowIso,
+          superseded_at: nowIso
+        });
+      } catch (_) {}
+    }, 8500);
+  }
 
   const topic = `devices/${targetBridgeDeviceId}/cmd`;
   const msgStr = JSON.stringify({ ed, md, sm });
-  pushCloudBotLog(`🚀 [${devId}] Comando enviado pelo Site Web -> Tópico: ${topic} | Alvo: ${sm}${sm <= 100 ? "%" : ""} (ED: ${ed}, MD: ${md}) | Msg: ${msgStr}`, devId);
+  if (!body.silentLog) {
+    pushCloudBotLog(`🚀 [${devId}] Comando enviado pelo Site Web -> Tópico: ${topic} | Alvo: ${sm}${sm <= 100 ? "%" : ""} (ED: ${ed}, MD: ${md}) | Msg: ${msgStr}`, devId);
+  }
 
   return {
     ok: true,
     result: {
-      command_id: inserted?.[0]?.id || "cloud-cmd",
+      command_id: cmdId || "cloud-cmd",
       device_id: devId,
       topic,
       payload: { ed, md, sm },
@@ -709,29 +759,113 @@ function startCloudBotTimer(devId, params = null) {
   const st = cloudEngine.liveMap[devId];
   if (!cfg || !st) return;
 
+  const runSessionId = Date.now();
+  cloudEngine.botTimers[devId] = { sessionId: runSessionId };
   st.test_running = true;
-  let useMax = (cfg.test_start_by || "max") === "max";
-  const runCycle = async () => {
-    if (!st.test_running) return;
-    const c = cloudEngine.devicesMap[devId];
-    const targetSm = useMax ? Number(c.test_max ?? 100) : Number(c.test_min ?? 1);
-    st.test_phase = `Enviando ${targetSm}% (Site Web Cloud)...`;
-    try {
-      await cloudSendCommand({ device_id: devId, ed: c.ed, md: c.md, sm: targetSm });
-      st.test_cycles_done = (st.test_cycles_done || 0) + 1;
-      st.test_cycles_ok = (st.test_cycles_ok || 0) + 1;
-    } catch (e) {
-      pushCloudBotLog(`[${devId}] Erro no ciclo web: ${e.message}`, devId);
-    }
-    useMax = !useMax;
-    const nextSm = useMax ? Number(c.test_max ?? 100) : Number(c.test_min ?? 1);
-    st.test_phase = `Aguardando próx. ciclo (${nextSm}%) • Freq: ${c.test_interval_min || 10} min`;
-  };
+  st.test_cycles_done = 0;
+  st.test_cycles_ok = 0;
+  st.test_cycles_fail = 0;
 
-  pushCloudBotLog(`🤖 [${devId} | ED ${cfg.ed}] Bot iniciado no Site Web! Limites: ${cfg.test_min}% a ${cfg.test_max}% (Iniciando por: ${useMax ? "Máximo" : "Mínimo"}).`, devId);
-  runCycle();
-  const intervalMs = Math.max(10000, Number(cfg.test_interval_min || 10) * 60 * 1000);
-  cloudEngine.botTimers[devId] = setInterval(runCycle, intervalMs);
+  let useMax = (cfg.test_start_by || "max") === "max";
+  pushCloudBotLog(
+    `🤖 [${devId} | ED ${cfg.ed}] Bot iniciado! Limites: ${cfg.test_min ?? 1}% a ${cfg.test_max ?? 100}% (Iniciando por: ${useMax ? "Máximo" : "Mínimo"} | Freq: ${cfg.test_interval_min ?? 10} min | Timeout: ${cfg.test_timeout_min ?? 2} min | Nº Envios: ${cfg.test_max_retries ?? 3}).`,
+    devId
+  );
+
+  const sleepMs = ms => new Promise(r => setTimeout(r, ms));
+  const isStillRunning = () => st.test_running && cloudEngine.botTimers[devId]?.sessionId === runSessionId;
+
+  (async () => {
+    while (isStillRunning()) {
+      const c = cloudEngine.devicesMap[devId] || cfg;
+      const vMin = Number(c.test_min ?? 1);
+      const vMax = Number(c.test_max ?? 100);
+      const intervalSec = Math.max(5, Math.round(Number(c.test_interval_min ?? 10) * 60));
+      const timeoutSec = Math.max(5, Math.round(Number(c.test_timeout_min ?? 2) * 60));
+      const maxRetries = Math.max(1, Number(c.test_max_retries ?? 3));
+      const targetSm = useMax ? vMax : vMin;
+      let confirmed = false;
+
+      // Envia exatamente até maxRetries (Nº de envios configurado) aguardando confirmação
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        if (!isStillRunning()) break;
+        st.test_phase = `Enviando ${targetSm}% (Tentativa ${attempt}/${maxRetries})`;
+        const sendEpochMs = Date.now();
+        try {
+          const res = await cloudSendCommand({
+            device_id: devId,
+            ed: c.ed,
+            md: c.md,
+            sm: targetSm,
+            silentLog: true
+          });
+          const msgJson = JSON.stringify(res.result.payload);
+          if (attempt === 1) {
+            pushCloudBotLog(`[${devId}] Envio 1/${maxRetries} -> Tópico: ${res.result.topic} | Alvo: ${targetSm}% | Msg: ${msgJson}`, devId);
+          } else {
+            pushCloudBotLog(`[${devId}] Reenvio ${attempt}/${maxRetries} -> Alvo: ${targetSm}% | Msg: ${msgJson}`, devId);
+          }
+        } catch (err) {
+          pushCloudBotLog(`[${devId}] Erro ao enviar tentativa ${attempt}/${maxRetries}: ${err.message}`, devId);
+        }
+
+        // Aguarda resposta durante timeoutSec segundos
+        const waitStartMs = Date.now();
+        while (Date.now() - waitStartMs < timeoutSec * 1000) {
+          if (!isStillRunning()) break;
+          const rem = Math.max(0, Math.ceil((timeoutSec * 1000 - (Date.now() - waitStartMs)) / 1000));
+          const mins = String(Math.floor(rem / 60)).padStart(2, "0");
+          const segs = String(rem % 60).padStart(2, "0");
+          st.test_phase = `Aguardando resp. (${mins}:${segs}) • Alvo ${targetSm}% [Tent. ${attempt}/${maxRetries}]`;
+
+          const lastSeenMs = st.last_seen ? new Date(st.last_seen).getTime() : 0;
+          if (lastSeenMs >= sendEpochMs - 3000 && isPositionConfirmed(targetSm, st.po)) {
+            confirmed = true;
+            break;
+          }
+          await sleepMs(1000);
+        }
+
+        if (confirmed) {
+          pushCloudBotLog(`[${devId}] CONFIRMADO: Válvula recebida e posicionada em ${st.po}% (Alvo: ${targetSm}%)!`, devId);
+          break;
+        } else if (isStillRunning()) {
+          const posLida = st.po !== null && st.po !== undefined ? `${st.po}%` : "Sem resposta";
+          pushCloudBotLog(
+            `[${devId}] Tentativa ${attempt}/${maxRetries} sem confirmação em ${c.test_timeout_min ?? 2} min. Posição: ${posLida} (Esperado: ${targetSm}%)`,
+            devId
+          );
+        }
+      }
+
+      if (!isStillRunning()) break;
+
+      st.test_cycles_done = (st.test_cycles_done || 0) + 1;
+      if (confirmed) {
+        st.pos_verify_state = "confirmed";
+        st.test_cycles_ok = (st.test_cycles_ok || 0) + 1;
+        pushCloudBotLog(`[${devId}] Ciclo em ${targetSm}% concluído com sucesso. Alternando próximo limite...`, devId);
+      } else {
+        st.pos_verify_state = "divergent";
+        st.test_cycles_fail = (st.test_cycles_fail || 0) + 1;
+        pushCloudBotLog(`[${devId}] ALERTA: Não posicionou em ${targetSm}% após ${maxRetries} envio(s). Alternando para próximo limite...`, devId);
+      }
+
+      useMax = !useMax;
+      const nextSm = useMax ? vMax : vMin;
+      pushCloudBotLog(`[${devId}] Aguardando ${c.test_interval_min ?? 10} min para o próximo envio (Próximo alvo: ${nextSm}%)...`, devId);
+
+      const nextTargetMs = Date.now() + intervalSec * 1000;
+      while (Date.now() < nextTargetMs) {
+        if (!isStillRunning()) break;
+        const rem = Math.max(0, Math.ceil((nextTargetMs - Date.now()) / 1000));
+        const mins = String(Math.floor(rem / 60)).padStart(2, "0");
+        const segs = String(rem % 60).padStart(2, "0");
+        st.test_phase = `Próximo envio (${nextSm}%) em ${mins}:${segs}`;
+        await sleepMs(1000);
+      }
+    }
+  })();
 }
 
 function stopCloudBotTimer(devId, params = null, silent = false) {
@@ -739,15 +873,13 @@ function stopCloudBotTimer(devId, params = null, silent = false) {
     cloudEngine.devicesMap[devId] = { ...(cloudEngine.devicesMap[devId] || {}), ...params, device_id: devId };
     saveCloudDevicesToStorage();
   }
-  if (cloudEngine.botTimers[devId]) {
-    clearInterval(cloudEngine.botTimers[devId]);
-    delete cloudEngine.botTimers[devId];
-  }
+  delete cloudEngine.botTimers[devId];
   const st = cloudEngine.liveMap[devId];
   if (st) {
     st.test_running = false;
     st.test_phase = "Parado";
   }
+  cloudFinalizePendingBridgeCommands(devId);
   if (!silent) {
     pushCloudBotLog(`⏹ [${devId}] Automação interrompida pelo usuário no Site Web.`, devId);
   }
