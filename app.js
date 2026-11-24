@@ -641,14 +641,48 @@ async function cloudSendCommand(body) {
     }
   }
 
+  // Como o firmware M2M.ino extrai o ED prioritariamente do sufixo _CF_<N> do tópico (devices/Mestre_<MAC>_CF_<N>/cmd),
+  // garante que o device_id enviado para a bridge corresponda ao ED escolhido pelo usuário!
+  let targetBridgeDeviceId = devId;
+  const m = devId.match(/^(Mestre_[0-9A-Fa-f]{12})_CF_(\d+)$/i);
+  if (m) {
+    const masterPrefix = m[1];
+    targetBridgeDeviceId = `${masterPrefix}_CF_${ed}`;
+  }
+
+  // Garante que targetBridgeDeviceId exista na tabela 'devices' do Supabase antes de inserir em commands_log
+  try {
+    const checkRows = await cloudRestGet(`devices?device_id=eq.${encodeURIComponent(targetBridgeDeviceId)}&select=device_id`);
+    if (!checkRows || checkRows.length === 0) {
+      const macMatch = targetBridgeDeviceId.match(/^Mestre_([0-9A-Fa-f]{12})_CF_(\d+)$/i);
+      const macAddr = macMatch ? macMatch[1].toUpperCase() : "";
+      await cloudRestPost("devices", {
+        device_id: targetBridgeDeviceId,
+        name: cfg.name || `Control Flow CF_${ed} (MAC ${macAddr})`,
+        location: cfg.client || "WBM Technology",
+        status: "online",
+        solution_code: "control_flow_monitor",
+        expected_interval_seconds: 1800,
+        master_id: `Mestre_${macAddr}`,
+        valve_address: ed,
+        master_mac: macAddr,
+        device_type: "CF",
+        node: ed,
+        environment: "production",
+        telemetry_mode: "legacy",
+        lifecycle_status: "active"
+      });
+    }
+  } catch (_) {}
+
   const inserted = await cloudRestPost("commands_log", {
-    device_id: devId,
+    device_id: targetBridgeDeviceId,
     command: { ed, md, sm },
     requested_by: cloudEngine.userId,
     status: "pending"
   });
 
-  const topic = `devices/${devId}/cmd`;
+  const topic = `devices/${targetBridgeDeviceId}/cmd`;
   const msgStr = JSON.stringify({ ed, md, sm });
   pushCloudBotLog(`🚀 [${devId}] Comando enviado pelo Site Web -> Tópico: ${topic} | Alvo: ${sm}${sm <= 100 ? "%" : ""} (ED: ${ed}, MD: ${md}) | Msg: ${msgStr}`, devId);
 
@@ -1260,7 +1294,7 @@ function renderAutomationBotTab() {
                   🤖 Configurações de Envio Automático e Limites (%)
                 </span>
                 <span class="text-[10px] font-mono text-zinc-400">
-                  Tópico: devices/${escapeHtml(devId)}/cmd
+                  Tópico: devices/${escapeHtml(dev.master_id ? `${dev.master_id}_CF_${dev.ed ?? 1}` : devId)}/cmd
                 </span>
               </div>
 
@@ -1362,19 +1396,19 @@ function renderAutomationBotTab() {
                   🎛️ Envio Manual Imediato (Sem Tempo de Espera / Sem Intervalo)
                 </span>
                 <span class="text-[10px] font-mono text-zinc-400">
-                  Tópico: devices/${escapeHtml(devId)}/cmd
+                  Tópico: devices/${escapeHtml(dev.master_id ? `${dev.master_id}_CF_${dev.ed ?? 1}` : devId)}/cmd
                 </span>
               </div>
 
               <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">ED do Equipamento (ed)</label>
-                  <input id="mcard-ed-${safeId}" type="number" min="1" max="20" value="${dev.ed ?? 1}" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-sky-400 focus:outline-none" />
+                  <input id="mcard-ed-${safeId}" type="number" min="1" max="20" value="${dev.ed ?? 1}" onchange="saveManualBotCardDevice('${devId}', '${safeId}', true)" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-sky-400 focus:outline-none" />
                 </div>
 
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">Modo Operação (md)</label>
-                  <select id="mcard-md-${safeId}" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-white text-center focus:border-sky-400 focus:outline-none">
+                  <select id="mcard-md-${safeId}" onchange="saveManualBotCardDevice('${devId}', '${safeId}', true)" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-white text-center focus:border-sky-400 focus:outline-none">
                     <option value="2" ${(dev.md ?? 2) === 2 ? "selected" : ""}>2 - Manual (Remoto)</option>
                     <option value="1" ${(dev.md ?? 2) === 1 ? "selected" : ""}>1 - Automático</option>
                   </select>
@@ -1898,7 +1932,7 @@ function readBotCardInputs(devId, safeId) {
   };
 }
 
-async function saveManualBotCardDevice(devId, safeId) {
+async function saveManualBotCardDevice(devId, safeId, silent = false) {
   try {
     const existing = state.devices.find(d => d.device_id === devId) || { device_id: devId };
     const ed = Number(document.getElementById(`mcard-ed-${safeId}`)?.value ?? existing.ed ?? 1);
@@ -1916,17 +1950,27 @@ async function saveManualBotCardDevice(devId, safeId) {
       ed,
       md
     };
+    if (existing) {
+      existing.ed = ed;
+      existing.md = md;
+    }
     await apiPost("/api/devices", payload);
-    showToast(`💾 [${devId}] Configuração Manual salva em config.json (ED: ${ed} | Modo: ${md})!`);
-    await pollServerState();
+    if (!silent) {
+      showToast(`💾 [${devId}] Configuração Manual salva em config.json (ED: ${ed} | Modo: ${md})!`);
+      await pollServerState();
+    }
   } catch (err) {
-    showToast(`Erro ao salvar configuração: ${err.message}`);
+    if (!silent) showToast(`Erro ao salvar configuração: ${err.message}`);
   }
 }
 
 async function autoSaveBotCardInput(devId, safeId) {
   try {
     const payload = readBotCardInputs(devId, safeId);
+    const manEd = document.getElementById(`mcard-ed-${safeId}`);
+    const manMd = document.getElementById(`mcard-md-${safeId}`);
+    if (manEd) manEd.value = payload.ed;
+    if (manMd) manMd.value = payload.md;
     const devObj = state.devices.find(d => d.device_id === devId);
     if (devObj) {
       Object.assign(devObj, payload);
@@ -2060,6 +2104,9 @@ async function refreshSelectedDeviceDetail(populateInputs = false) {
     renderErrorsHistoryTable(detail);
     renderDeviceMqttFeed(state.selectedDeviceId, detail);
     renderDeviceIndividualBotLogs(state.selectedDeviceId, detail);
+    if (state.activeView === "automation") {
+      renderAutomationBotTab();
+    }
 
     if (populateInputs || !state.reportDirty) {
       regenerateTechnicalReport();
