@@ -1,0 +1,1448 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WBM Technology • Supervisório &amp; Auditoria Control Flow</title>
+  <link rel="icon" type="image/png" href="logo-iot.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            wbm: {
+              black: '#08090a',
+              surface: '#111416',
+              card: '#161a1d',
+              border: '#232a2f',
+              green: '#2ce610',
+              greenDark: '#22b80c',
+              greenMuted: 'rgba(44, 230, 16, 0.12)'
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #08090a;
+      color: #f3f5f7;
+    }
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .wbm-glow {
+      box-shadow: 0 0 24px rgba(44, 230, 16, 0.16);
+    }
+    .wbm-btn-primary {
+      background-color: #2ce610;
+      color: #070907;
+      transition: all 0.18s ease;
+    }
+    .wbm-btn-primary:hover {
+      background-color: #3dff21;
+      box-shadow: 0 0 22px rgba(44, 230, 16, 0.35);
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0c0e10;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #262e33;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #2ce610;
+    }
+    @media print {
+      header, #device-tabs-bar, .no-print {
+        display: none !important;
+      }
+      body {
+        background: #fff !important;
+        color: #000 !important;
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col selection:bg-wbm-green selection:text-black">
+
+  <!-- ========================================================================= -->
+  <!-- 1. CABEÇALHO SUPERIOR E BARRA DE NAVEGAÇÃO POR ABAS                       -->
+  <!-- ========================================================================= -->
+  <header class="sticky top-0 z-30 border-b border-wbm-border bg-wbm-black/95 backdrop-blur-md">
+    <div class="max-w-[1600px] mx-auto px-5 py-3 flex flex-wrap items-center justify-between gap-4">
+      <!-- Identidade Visual & Status de Conexão -->
+      <div class="flex items-center gap-3.5">
+        <img src="logo-wbm.png" alt="WBM Technology" class="h-9 w-auto object-contain" onerror="this.style.display='none'" />
+        <div>
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <h1 class="font-extrabold text-base sm:text-lg text-white tracking-tight">
+              Supervisório &amp; Auditoria • Control Flow
+            </h1>
+            <span class="px-2 py-0.5 text-[11px] font-bold rounded-md bg-wbm-greenMuted text-wbm-green border border-wbm-green/30">
+              LoRa ↔ MQTT Direto
+            </span>
+          </div>
+          <div class="flex flex-wrap items-center gap-2.5 text-xs text-zinc-400 mt-0.5">
+            <span class="inline-flex items-center gap-1.5">
+              <span id="mqtt-dot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+              <span id="mqtt-status-text">Conectando ao Broker 163.176.56.133:1883...</span>
+            </span>
+            <span class="text-zinc-600">•</span>
+            <span id="supabase-status-text" class="text-zinc-400">Lovable: pronto</span>
+            <span class="text-zinc-600">•</span>
+            <span id="live-clock" class="font-mono text-zinc-300"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Botões Globais de Ação -->
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onclick="openAddDeviceModal()"
+          class="wbm-btn-primary px-3.5 py-2 rounded-xl font-extrabold text-xs flex items-center gap-1.5"
+        >
+          <span>＋ Adicionar Control Flow</span>
+        </button>
+
+        <button
+          type="button"
+          onclick="syncWithSupabaseCloud()"
+          class="px-3 py-2 rounded-xl bg-wbm-surface hover:bg-wbm-card border border-wbm-green/40 text-wbm-green font-semibold text-xs flex items-center gap-1.5 transition"
+          title="Sincronizar Nome, Local e Endereço dos dispositivos com o cadastro do Lovable (os tópicos e o acompanhamento são feitos direto pelo Broker MQTT)"
+        >
+          <span>☁️ Sincronizar Cadastro Lovable</span>
+        </button>
+
+        <button
+          type="button"
+          onclick="openMqttArchitectureModal()"
+          class="px-3 py-2 rounded-xl bg-wbm-surface hover:bg-wbm-card border border-wbm-border text-zinc-300 hover:text-white font-medium text-xs transition"
+          title="Ver Tabela de Tópicos MQTT, Comandos SM e Handshake ACK 1/2/3"
+        >
+          <span>📡 Protocolo M2M</span>
+        </button>
+
+        <button
+          type="button"
+          onclick="openShareLinkModal()"
+          class="px-3 py-2 rounded-xl bg-wbm-surface hover:bg-wbm-card border border-sky-400/40 text-sky-300 font-bold text-xs flex items-center gap-1.5 transition"
+          title="Gerar e copiar link direto ou QR Code para acessar o painel pelo celular ou outro computador"
+        >
+          <span>🔗 Link de Acesso / Celular</span>
+        </button>
+
+        <button
+          type="button"
+          onclick="openBrokerSettingsModal()"
+          class="px-3 py-2 rounded-xl bg-wbm-surface hover:bg-wbm-card border border-wbm-border text-zinc-300 hover:text-white text-xs transition"
+          title="Configurações do Broker MQTT e Credenciais"
+        >
+          ⚙️ Broker
+        </button>
+      </div>
+    </div>
+
+    <!-- BARRA DE ABAS: CENTRAL DE COMANDOS (BOT / MANUAL) + GRÁFICOS & RELATÓRIO + ABAS INDIVIDUAIS DAS VÁLVULAS -->
+    <div id="device-tabs-bar" class="border-t border-wbm-border bg-[#0c0e10]">
+      <div class="max-w-[1600px] mx-auto px-5 py-2 flex items-center gap-2 overflow-x-auto">
+        <button
+          id="tab-btn-automation"
+          type="button"
+          onclick="selectAutomationTab()"
+          class="px-4 py-2 rounded-xl border text-left transition-all flex items-center gap-2.5 shrink-0 bg-wbm-surface border-wbm-border text-zinc-300 hover:text-white hover:border-wbm-green"
+        >
+          <span class="text-base">🤖</span>
+          <div>
+            <div class="text-xs font-extrabold flex items-center gap-1.5">
+              <span>Central de Comandos (Auto &amp; Manual)</span>
+              <span id="bot-active-count-badge" class="px-1.5 py-0.2 text-[10px] font-mono rounded bg-wbm-black border border-wbm-border text-wbm-green">
+                0 ativos
+              </span>
+            </div>
+            <div class="text-[10px] font-mono text-zinc-400">
+              Controle Simultâneo de Todas as Válvulas
+            </div>
+          </div>
+        </button>
+
+        <button
+          id="tab-btn-charts-report"
+          type="button"
+          onclick="selectChartsAndReportTab()"
+          class="px-4 py-2 rounded-xl border text-left transition-all flex items-center gap-2.5 shrink-0 bg-wbm-surface border-wbm-border text-zinc-300 hover:text-white hover:border-wbm-green"
+        >
+          <span class="text-base">📊</span>
+          <div>
+            <div class="text-xs font-extrabold flex items-center gap-1.5">
+              <span>Gráficos &amp; Relatório</span>
+              <span id="charts-selected-dev-badge" class="px-1.5 py-0.2 text-[10px] font-mono rounded bg-wbm-black border border-wbm-border text-sky-300">
+                Auditoria
+              </span>
+            </div>
+            <div class="text-[10px] font-mono text-zinc-400">
+              Curvas Históricas, Corrente (mA) &amp; Laudo Forms
+            </div>
+          </div>
+        </button>
+
+        <span class="text-zinc-700 font-bold px-1">|</span>
+        <span class="text-[11px] font-bold uppercase tracking-wider text-zinc-500 shrink-0 mr-1">
+          Válvulas Control Flow:
+        </span>
+        <div id="device-tabs-container" class="flex items-center gap-2 flex-nowrap"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ========================================================================= -->
+  <!-- 2. VISÃO A: CENTRAL DE COMANDOS (AUTOMÁTICO & MANUAL DE TODAS AS VÁLVULAS)-->
+  <!-- ========================================================================= -->
+  <main id="automation-tab-view" class="hidden flex-1 max-w-[1600px] w-full mx-auto px-5 py-6 space-y-6">
+
+    <!-- Banner de Controle Geral -->
+    <section class="rounded-2xl bg-wbm-surface border border-wbm-border p-5 sm:p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+      <div class="space-y-1.5 max-w-4xl">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-wbm-greenMuted border border-wbm-green/30 text-wbm-green text-xs font-extrabold">
+          <span>⚡ CONTROLE DIRETO NO BROKER MQTT (AUTOMÁTICO CÍCLICO &amp; ENVIO MANUAL IMEDIATO)</span>
+        </div>
+        <h2 class="text-lg sm:text-xl font-extrabold text-white">
+          Painel Geral de Acionamento e Testes de Posicionamento Control Flow
+        </h2>
+        <p class="text-xs text-zinc-400 leading-relaxed">
+          Em cada válvula abaixo você pode alternar entre <strong>🤖 Modo Automático (Bot Cíclico Min% ↔ Max%)</strong> e <strong>🎛️ Modo Manual (Envio Imediato)</strong>, acompanhando em tempo real a resposta física (<code class="font-mono text-zinc-300">po == sm</code>) diretamente pelo servidor MQTT.
+        </p>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2.5 shrink-0">
+        <button
+          type="button"
+          onclick="openAddDeviceModal()"
+          class="px-4 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-green/40 text-wbm-green font-bold text-xs transition"
+        >
+          ＋ Nova Válvula
+        </button>
+        <button
+          type="button"
+          onclick="startAllBotTestsUI()"
+          class="wbm-btn-primary px-4 py-2.5 rounded-xl font-extrabold text-xs shadow-lg"
+        >
+          ▶ Iniciar Todos os Bots
+        </button>
+        <button
+          type="button"
+          onclick="stopAllBotTestsUI()"
+          class="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs transition"
+        >
+          ⏹ Parar Todos
+        </button>
+      </div>
+    </section>
+
+    <!-- Grid de Cards das Válvulas Control Flow -->
+    <section class="space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-xs font-extrabold uppercase tracking-wider text-wbm-green">
+          1. Válvulas Control Flow Monitoradas (Auto-Descoberta Padrão <code class="font-mono">Mestre_&lt;MAC&gt;_CF_&lt;N&gt;</code>)
+        </h3>
+        <span class="text-xs text-zinc-400">
+          Selecione <strong>Automático</strong> ou <strong>Manual</strong> individualmente em cada equipamento
+        </span>
+      </div>
+
+      <div id="bot-devices-cards-grid" class="grid grid-cols-1 xl:grid-cols-2 gap-6"></div>
+    </section>
+
+    <!-- Histórico Geral de Comunicação + Editor Avançado config.json -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <!-- Log Geral de Comandos & Tópicos MQTT -->
+      <div class="lg:col-span-7 rounded-2xl bg-wbm-surface border border-wbm-border p-5 flex flex-col gap-4">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-wbm-border pb-3">
+          <div>
+            <h3 class="text-sm font-bold uppercase tracking-wider text-wbm-green">
+              📜 2. Histórico Geral de Tópicos MQTT &amp; Comandos (Todos os Dispositivos)
+            </h3>
+            <p class="text-xs text-zinc-400">
+              Acompanhamento global em tempo real de comandos, ciclos, tópicos (<code class="font-mono">/telemetry, /status, /cmd</code>) e auditoria de posição
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <select
+              id="global-history-dev-filter"
+              onchange="setGlobalHistoryDeviceFilter(this.value)"
+              class="px-2.5 py-1 text-[11px] font-mono rounded-lg bg-wbm-black border border-wbm-border text-zinc-200 focus:outline-none focus:border-wbm-green"
+            >
+              <option value="ALL">Todos os Dispositivos</option>
+            </select>
+            <span id="bot-log-count-badge" class="px-2.5 py-1 text-xs font-mono rounded-lg bg-wbm-black border border-wbm-border text-zinc-300">
+              0 eventos
+            </span>
+          </div>
+        </div>
+
+        <!-- Abas do Histórico Geral -->
+        <div class="flex flex-wrap items-center gap-2 p-1 rounded-xl bg-wbm-black border border-wbm-border text-xs">
+          <button
+            id="ghist-tab-logs"
+            type="button"
+            onclick="setGlobalHistorySubTab('logs')"
+            class="flex-1 py-1.5 px-3 rounded-lg font-extrabold transition bg-[#2ce610] text-black"
+          >
+            📜 Log Geral de Comandos &amp; Ciclos
+          </button>
+          <button
+            id="ghist-tab-topics"
+            type="button"
+            onclick="setGlobalHistorySubTab('topics')"
+            class="flex-1 py-1.5 px-3 rounded-lg font-extrabold transition text-zinc-400 hover:text-white"
+          >
+            📡 Feed Geral de Tópicos MQTT
+          </button>
+          <button
+            id="ghist-tab-audit"
+            type="button"
+            onclick="setGlobalHistorySubTab('audit')"
+            class="flex-1 py-1.5 px-3 rounded-lg font-extrabold transition text-zinc-400 hover:text-white"
+          >
+            📑 Tabela Geral de Comandos (ACK 1/2/3)
+          </button>
+        </div>
+
+        <!-- Sub-painel 1: Log Geral de Comandos e Eventos -->
+        <div id="bot-global-log-box" class="flex-1 p-4 rounded-xl bg-wbm-black border border-wbm-border font-mono text-xs text-zinc-200 space-y-2 overflow-y-auto min-h-[340px] max-h-[420px]"></div>
+
+        <!-- Sub-painel 2: Feed Geral de Tópicos MQTT -->
+        <div id="bot-global-topics-box" class="hidden flex-1 p-4 rounded-xl bg-wbm-black border border-wbm-border font-mono text-xs text-zinc-200 space-y-2 overflow-y-auto min-h-[340px] max-h-[420px]"></div>
+
+        <!-- Sub-painel 3: Tabela Geral de Auditoria de Comandos -->
+        <div id="bot-global-audit-box" class="hidden flex-1 rounded-xl bg-wbm-black border border-wbm-border overflow-x-auto overflow-y-auto min-h-[340px] max-h-[420px]">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead class="sticky top-0 bg-wbm-black text-zinc-400 border-b border-wbm-border uppercase text-[10px]">
+              <tr>
+                <th class="py-2 px-2.5">Data/Hora</th>
+                <th class="py-2 px-2.5">Dispositivo</th>
+                <th class="py-2 px-2.5">Tópico / Alvo</th>
+                <th class="py-2 px-2.5">ACK 1/2/3</th>
+                <th class="py-2 px-2.5">Status</th>
+              </tr>
+            </thead>
+            <tbody id="bot-global-audit-tbody" class="divide-y divide-wbm-border bg-[#0b0d0f]"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Configuração do Broker e Arquivo config.json -->
+      <div class="lg:col-span-5 rounded-2xl bg-wbm-surface border border-wbm-border p-5 flex flex-col gap-4">
+        <div class="flex items-center justify-between border-b border-wbm-border pb-3">
+          <div>
+            <h3 class="text-sm font-bold uppercase tracking-wider text-sky-400">
+              ⚙️ 3. Conexão MQTT &amp; Arquivo <code class="font-mono">config.json</code>
+            </h3>
+            <p class="text-xs text-zinc-400">
+              Sincronizado automaticamente em disco com <code class="font-mono text-zinc-300">config.json</code>
+            </p>
+          </div>
+          <button
+            type="button"
+            onclick="saveBotConnectionAndJsonUI()"
+            class="wbm-btn-primary px-3.5 py-2 rounded-xl font-extrabold text-xs"
+          >
+            💾 Salvar &amp; Reconectar
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div>
+            <label class="block font-semibold text-zinc-300 mb-1">Servidor Broker MQTT (<code class="font-mono">broker</code>)</label>
+            <input id="bot-cfg-broker" type="text" value="163.176.56.133" autocomplete="off" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white focus:border-wbm-green focus:outline-none" />
+          </div>
+          <div>
+            <label class="block font-semibold text-zinc-300 mb-1">Porta TCP (<code class="font-mono">porta</code>)</label>
+            <input id="bot-cfg-porta" type="number" value="1883" autocomplete="off" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white focus:border-wbm-green focus:outline-none" />
+          </div>
+          <div>
+            <label class="block font-semibold text-zinc-300 mb-1">Usuário MQTT (<code class="font-mono">username</code>)</label>
+            <input id="bot-cfg-user" type="text" value="wbm_technology" autocomplete="off" data-lpignore="true" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white focus:border-wbm-green focus:outline-none" />
+          </div>
+          <div>
+            <label class="block font-semibold text-zinc-300 mb-1">Chave MQTT (<code class="font-mono">password</code>)</label>
+            <input id="bot-cfg-pass" type="text" value="Wbm.technology01" autocomplete="off" data-lpignore="true" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white focus:border-wbm-green focus:outline-none" />
+          </div>
+        </div>
+
+        <div class="flex-1 flex flex-col gap-1.5">
+          <div class="flex items-center justify-between">
+            <label class="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+              Conteúdo de <code class="font-mono text-wbm-green">config.json</code>:
+            </label>
+            <button
+              type="button"
+              onclick="downloadConfigJsonFile()"
+              class="text-[11px] font-semibold text-sky-400 hover:underline"
+            >
+              ⬇ Baixar config.json
+            </button>
+          </div>
+          <textarea
+            id="bot-config-json-textarea"
+            rows="10"
+            onfocus="state.editingConfigJson = true"
+            onblur="state.editingConfigJson = false"
+            class="w-full p-3 rounded-xl bg-wbm-black border border-wbm-border font-mono text-[11px] text-emerald-300 leading-relaxed focus:outline-none focus:border-wbm-green"
+          ></textarea>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ========================================================================= -->
+  <!-- 3. VISÃO B: GRÁFICOS & RELATÓRIO (SELETOR DE DISPOSITIVO + LAUDO)         -->
+  <!-- ========================================================================= -->
+  <main id="device-tab-view" class="flex-1 max-w-[1600px] w-full mx-auto px-5 py-6 space-y-6">
+
+    <!-- SEÇÃO 3.0: SELETOR DE DISPOSITIVO PARA GRÁFICOS & RELATÓRIO -->
+    <section class="rounded-2xl bg-wbm-surface border border-wbm-border p-5 space-y-4 no-print">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-wbm-border pb-3.5">
+        <div>
+          <span class="text-[11px] font-extrabold uppercase tracking-wider text-wbm-green">
+            📊 Seleção de Equipamento • Gráficos Históricos &amp; Relatório Técnico
+          </span>
+          <h3 class="text-base sm:text-lg font-extrabold text-white mt-0.5">
+            Escolha qual Válvula Control Flow deseja analisar os Gráficos e gerar o Relatório
+          </h3>
+        </div>
+
+        <!-- Dropdown Rápido de Seleção -->
+        <div class="flex items-center gap-2.5 shrink-0">
+          <label for="charts-device-select" class="text-xs font-bold text-zinc-300 whitespace-nowrap">
+            Dispositivo Ativo:
+          </label>
+          <select
+            id="charts-device-select"
+            onchange="selectDeviceTab(this.value)"
+            class="px-3.5 py-2 rounded-xl bg-wbm-black border border-wbm-green/50 text-xs font-mono font-bold text-wbm-green focus:outline-none focus:border-wbm-green min-w-[260px]"
+          ></select>
+        </div>
+      </div>
+
+      <!-- Cards Clicáveis de Todos os Dispositivos -->
+      <div id="charts-devices-selector-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3"></div>
+    </section>
+
+    <!-- SEÇÃO 3.1: CABEÇALHO DO EQUIPAMENTO + 8 KPIs + PIPELINE DE HANDSHAKE (ACK 1, 2, 3) -->
+    <section class="rounded-2xl bg-wbm-surface border border-wbm-border p-5 sm:p-6 flex flex-col gap-5">
+      <div class="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-5 border-b border-wbm-border">
+        <div class="space-y-1.5">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span id="dev-badge-type" class="px-2.5 py-0.5 text-xs font-extrabold rounded-md bg-wbm-green text-black">
+              CONTROL FLOW (CF)
+            </span>
+            <span id="dev-badge-id" class="px-3 py-0.5 text-xs font-mono font-bold rounded-md bg-wbm-black border border-wbm-border text-wbm-green">
+              Mestre_CC7B5CF20D9C_CF_1
+            </span>
+            <span id="dev-badge-node" class="px-2.5 py-0.5 text-xs font-semibold rounded-md bg-wbm-card text-zinc-300 border border-wbm-border">
+              Node (ed): 1 • Modo (md): 2 (Manual)
+            </span>
+            <span id="dev-badge-status" class="px-2.5 py-0.5 text-xs font-bold rounded-full bg-emerald-500/20 text-emerald-400">
+              ● Operando Normalmente
+            </span>
+          </div>
+          <h2 id="dev-title" class="text-xl sm:text-2xl font-extrabold text-white">
+            Selecione uma aba de equipamento
+          </h2>
+          <p id="dev-subtitle" class="text-xs text-zinc-400">
+            Tópicos MQTT: <code id="dev-topics-summary" class="text-zinc-300 font-mono">devices/.../telemetry | /status | /cmd</code>
+          </p>
+        </div>
+
+        <!-- Ações Rápidas do Dispositivo -->
+        <div class="flex flex-wrap items-center gap-2 shrink-0 no-print">
+          <button
+            type="button"
+            onclick="simulateTestBatteryForCurrentDevice()"
+            class="px-3.5 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-amber-400/40 text-amber-300 font-semibold text-xs transition"
+            title="Injetar bateria de ciclos de teste para validar gráficos e relatórios"
+          >
+            🧪 Simular Bateria Demo
+          </button>
+          <button
+            type="button"
+            onclick="openEditCurrentDeviceModal()"
+            class="px-3.5 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-border text-zinc-300 font-semibold text-xs transition"
+          >
+            ✏️ Configurar Equipamento
+          </button>
+          <button
+            type="button"
+            onclick="exportCurrentDeviceCSV()"
+            class="px-3.5 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-border text-zinc-200 font-semibold text-xs transition"
+          >
+            📥 Exportar CSV
+          </button>
+          <button
+            type="button"
+            onclick="scrollToReportSection()"
+            class="wbm-btn-primary px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center gap-1.5 shadow-lg"
+          >
+            <span>📋 Laudo Técnico &amp; Forms</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 8 Indicadores (KPIs) em Tempo Real -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3.5">
+        <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border">
+          <div class="text-[11px] font-medium text-zinc-400">Posição Atual (po)</div>
+          <div id="kpi-po" class="text-xl font-extrabold text-wbm-green mt-1">---%</div>
+          <div id="kpi-po-sub" class="text-[11px] text-zinc-500 mt-0.5">Abertura física</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border">
+          <div class="text-[11px] font-medium text-zinc-400">Último Setpoint (sm)</div>
+          <div id="kpi-sm" class="text-xl font-extrabold text-sky-400 mt-1">---%</div>
+          <div id="kpi-sm-sub" class="text-[11px] text-zinc-500 mt-0.5">Alvo enviado</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border">
+          <div class="text-[11px] font-medium text-zinc-400">Confirmação Posição</div>
+          <div id="kpi-confirm" class="text-sm font-extrabold text-zinc-300 mt-1.5">Aguardando</div>
+          <div id="kpi-confirm-sub" class="text-[11px] text-zinc-500 mt-1">Comparação po vs sm</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border">
+          <div class="text-[11px] font-medium text-zinc-400">Corrente Motor (I)</div>
+          <div id="kpi-current" class="text-xl font-extrabold text-amber-400 mt-1">0 mA</div>
+          <div id="kpi-current-sub" class="text-[11px] text-zinc-500 mt-0.5">Pico: 0 mA</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border">
+          <div class="text-[11px] font-medium text-zinc-400">Ciclos (qc) / Voltas (qv)</div>
+          <div id="kpi-cycles" class="text-xl font-extrabold text-white mt-1">--- / ---</div>
+          <div id="kpi-cycles-sub" class="text-[11px] text-zinc-500 mt-0.5">Acumulado válvula</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border">
+          <div class="text-[11px] font-medium text-zinc-400">Código de Erro (er)</div>
+          <div id="kpi-error" class="text-base font-extrabold text-wbm-green mt-1.5">0 (Sem Erro)</div>
+          <div id="kpi-error-sub" class="text-[11px] text-zinc-500 mt-1">Watchdog LoRa 5m</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border">
+          <div class="text-[11px] font-medium text-zinc-400">Taxa Sucesso Testes</div>
+          <div id="kpi-success-rate" class="text-xl font-extrabold text-wbm-green mt-1">100%</div>
+          <div id="kpi-success-sub" class="text-[11px] text-zinc-500 mt-0.5">0 / 0 confirmados</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border">
+          <div class="text-[11px] font-medium text-zinc-400">Última Telemetria</div>
+          <div id="kpi-last-seen" class="text-sm font-bold text-white mt-1.5">Sem registro</div>
+          <div id="kpi-last-ack" class="text-[11px] text-wbm-green mt-1">Último ACK: ---</div>
+        </div>
+      </div>
+
+      <!-- Pipeline Visual do Handshake de 3 Etapas (Status 1, 2 e 3) -->
+      <div class="p-4 rounded-xl bg-wbm-black border border-wbm-border">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <span class="text-xs font-bold uppercase tracking-wider text-zinc-300">
+            Fluxo de Confirmação do Último Comando (Handshaking M2M.ino • Tópico /status)
+          </span>
+          <span id="handshake-cmd-summary" class="text-xs font-mono text-zinc-400">
+            Nenhum comando recente registrado
+          </span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div id="hs-step-0" class="p-3 rounded-xl border border-wbm-border bg-wbm-surface flex items-center gap-3">
+            <span class="w-7 h-7 rounded-lg bg-sky-500/20 text-sky-400 font-extrabold text-xs flex items-center justify-center shrink-0">CMD</span>
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-white">1. Comando Enviado (/cmd)</div>
+              <div id="hs-step-0-time" class="text-[11px] text-zinc-400 truncate">Aguardando envio</div>
+            </div>
+          </div>
+
+          <div id="hs-step-1" class="p-3 rounded-xl border border-wbm-border bg-wbm-surface flex items-center gap-3">
+            <span class="w-7 h-7 rounded-lg bg-zinc-800 text-zinc-400 font-extrabold text-xs flex items-center justify-center shrink-0">ACK 1</span>
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-white">2. Status "1" (Chegou no Mestre)</div>
+              <div id="hs-step-1-time" class="text-[11px] text-zinc-400 truncate">Rajada 3x LoRa agendada</div>
+            </div>
+          </div>
+
+          <div id="hs-step-2" class="p-3 rounded-xl border border-wbm-border bg-wbm-surface flex items-center gap-3">
+            <span class="w-7 h-7 rounded-lg bg-zinc-800 text-zinc-400 font-extrabold text-xs flex items-center justify-center shrink-0">ACK 2</span>
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-white">3. Status "2" (Chegou na Válvula)</div>
+              <div id="hs-step-2-time" class="text-[11px] text-zinc-400 truncate">setpointManual confirmado via LoRa</div>
+            </div>
+          </div>
+
+          <div id="hs-step-3" class="p-3 rounded-xl border border-wbm-border bg-wbm-surface flex items-center gap-3">
+            <span class="w-7 h-7 rounded-lg bg-zinc-800 text-zinc-400 font-extrabold text-xs flex items-center justify-center shrink-0">ACK 3</span>
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-white">4. Status "3" (Posição Atingida)</div>
+              <div id="hs-step-3-time" class="text-[11px] text-zinc-400 truncate">Posição física (po) == Alvo (sm)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SEÇÃO 3.2: PAINEL DE ACIONAMENTO DO DISPOSITIVO (MODO AUTOMÁTICO vs MODO MANUAL) -->
+    <section class="rounded-2xl bg-wbm-surface border border-wbm-border p-5 sm:p-6 space-y-5 no-print">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-wbm-border pb-4">
+        <div>
+          <h3 class="text-sm font-extrabold uppercase tracking-wider text-white">
+            Painel de Comando e Testes deste Dispositivo
+          </h3>
+          <p class="text-xs text-zinc-400">
+            Alterne entre <strong>🤖 Modo Automático (Bot Cíclico)</strong> e <strong>🎛️ Modo Manual (Envio Imediato sem espera)</strong>.
+          </p>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button
+            id="single-mode-btn-auto"
+            type="button"
+            onclick="setSingleTabCommandMode('auto')"
+            class="px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 bg-[#2ce610] text-black shadow-[0_0_16px_rgba(44,230,16,0.3)]"
+          >
+            <span>🤖 Automático (Bot Cíclico)</span>
+          </button>
+          <button
+            id="single-mode-btn-manual"
+            type="button"
+            onclick="setSingleTabCommandMode('manual')"
+            class="px-5 py-2.5 rounded-xl font-extrabold text-xs transition flex items-center gap-2 bg-wbm-black text-zinc-400 hover:text-white border border-wbm-border"
+          >
+            <span>🎛️ Manual (Envio Imediato)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- OPÇÃO 1: AUTOMÁTICO (BOT DE CICLOS DE TESTE MIN% <-> MAX%) -->
+      <div id="single-panel-auto" class="flex flex-col justify-between gap-4">
+        <div class="space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h4 class="text-sm font-bold uppercase tracking-wider text-wbm-green">
+                🤖 Modo Automático • Executor de Ciclos (Min% ↔ Max%)
+              </h4>
+              <p class="text-xs text-zinc-400">
+                Alterna setpoints periodicamente, reenvia até confirmar posição (<code class="font-mono">po == sm</code>) e registra estatísticas
+              </p>
+            </div>
+            <span id="test-runner-badge" class="px-3 py-1 text-xs font-extrabold rounded-full bg-zinc-800 text-zinc-400">
+              ● Parado
+            </span>
+          </div>
+
+          <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-zinc-300 mb-1">ED do Nó (ed)</label>
+              <input id="auto-ed" type="number" min="1" max="20" value="1" onchange="saveTestConfigOnly(true)" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border text-sm font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-300 mb-1">Modo (md)</label>
+              <select id="auto-md" onchange="saveTestConfigOnly(true)" class="w-full px-2.5 py-2 rounded-xl bg-wbm-black border border-wbm-border text-sm text-white focus:border-wbm-green focus:outline-none">
+                <option value="2">2 - Manual</option>
+                <option value="1">1 - Auto</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-300 mb-1">Limite Mín (%)</label>
+              <input id="test-min" type="number" min="0" max="100" value="1" onchange="saveTestConfigOnly(true)" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border text-sm font-mono font-bold text-sky-400 text-center focus:border-wbm-green focus:outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-300 mb-1">Limite Máx (%)</label>
+              <input id="test-max" type="number" min="0" max="100" value="100" onchange="saveTestConfigOnly(true)" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border text-sm font-mono font-bold text-wbm-green text-center focus:border-wbm-green focus:outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-300 mb-1">Iniciar Por</label>
+              <select id="test-start-by" onchange="saveTestConfigOnly(true)" class="w-full px-2.5 py-2 rounded-xl bg-wbm-black border border-wbm-border text-sm text-white focus:border-wbm-green focus:outline-none">
+                <option value="max">Máximo</option>
+                <option value="min">Mínimo</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-300 mb-1">Frequência (min)</label>
+              <input id="test-interval" type="number" step="0.5" min="0.1" value="10" onchange="saveTestConfigOnly(true)" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border text-sm font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-300 mb-1">Timeout (min)</label>
+              <input id="test-timeout" type="number" step="0.5" min="0.1" value="2" onchange="saveTestConfigOnly(true)" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border text-sm font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-300 mb-1">Nº Envios</label>
+              <input id="test-retries" type="number" min="1" max="10" value="3" onchange="saveTestConfigOnly(true)" class="w-full px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border text-sm font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+            </div>
+          </div>
+
+          <!-- Status Ao Vivo do Ciclo -->
+          <div class="p-4 rounded-xl bg-wbm-black border border-wbm-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Status do Ciclo Automático</div>
+              <div id="test-phase-text" class="text-sm font-bold text-white mt-0.5">Aguardando início...</div>
+            </div>
+            <div class="flex items-center gap-4 text-xs font-mono">
+              <div>Ciclos: <strong id="test-stat-done" class="text-white">0</strong></div>
+              <div>Confirmados: <strong id="test-stat-ok" class="text-wbm-green">0</strong></div>
+              <div>Falhas: <strong id="test-stat-fail" class="text-rose-400">0</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-end gap-3 pt-1">
+          <button
+            type="button"
+            onclick="saveTestConfigOnly()"
+            class="px-4 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-border text-zinc-300 font-semibold text-xs transition"
+          >
+            💾 Salvar Parâmetros
+          </button>
+          <button
+            id="btn-start-test"
+            type="button"
+            onclick="startAutomatedTestUI()"
+            class="wbm-btn-primary px-5 py-2.5 rounded-xl font-extrabold text-xs"
+          >
+            ▶ Iniciar Automático (Bot)
+          </button>
+          <button
+            id="btn-stop-test"
+            type="button"
+            onclick="stopAutomatedTestUI()"
+            class="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs transition"
+          >
+            ⏹ Parar Teste
+          </button>
+        </div>
+      </div>
+
+      <!-- OPÇÃO 2: MANUAL (ENVIO DIRETO E IMEDIATO SEM TEMPO DE ESPERA OU INTERVALO) -->
+      <div id="single-panel-manual" class="hidden flex flex-col gap-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h4 class="text-sm font-bold uppercase tracking-wider text-sky-400">
+              🎛️ Modo Manual • Envio de Comando MQTT Direto (/cmd)
+            </h4>
+            <p class="text-xs text-zinc-400">
+              Selecione o ED e Modo, digite o valor desejado e envie imediatamente sem tempo de espera (<code class="font-mono text-zinc-300">{"ed":N,"sm":X,"md":M}</code>)
+            </p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+          <div>
+            <label class="block text-xs font-semibold text-zinc-300 mb-1">Endereço Nó (ed)</label>
+            <input id="cmd-ed" type="number" min="1" max="20" value="1" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-sm font-mono text-white focus:border-sky-400 focus:outline-none" />
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-zinc-300 mb-1">Modo Operação (md)</label>
+            <select id="cmd-md" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-sm text-white focus:border-sky-400 focus:outline-none">
+              <option value="2">2 - Manual (Remoto)</option>
+              <option value="1">1 - Automático</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-sky-300 mb-1">Valor do Comando / Setpoint (sm)</label>
+            <input
+              id="cmd-sm"
+              type="number"
+              min="0"
+              max="1000"
+              value="100"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();sendManualCommandFromUI();}"
+              class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-sky-400/50 text-sm font-mono font-bold text-sky-300 focus:border-sky-400 focus:outline-none"
+            />
+          </div>
+        </div>
+
+        <!-- Atalhos de Posição e Comandos Especiais em Linha Limpa -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div>
+            <span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 mb-2">
+              Atalhos de Setpoint de Posição (1% a 100%):
+            </span>
+            <div class="grid grid-cols-5 gap-2">
+              <button type="button" onclick="sendQuickCommand(1)" class="py-2 rounded-xl bg-wbm-black hover:bg-wbm-card border border-wbm-border text-xs font-bold text-zinc-200 transition">1% (0%)</button>
+              <button type="button" onclick="sendQuickCommand(25)" class="py-2 rounded-xl bg-wbm-black hover:bg-wbm-card border border-wbm-border text-xs font-bold text-zinc-200 transition">25%</button>
+              <button type="button" onclick="sendQuickCommand(50)" class="py-2 rounded-xl bg-wbm-black hover:bg-wbm-card border border-wbm-border text-xs font-bold text-zinc-200 transition">50%</button>
+              <button type="button" onclick="sendQuickCommand(75)" class="py-2 rounded-xl bg-wbm-black hover:bg-wbm-card border border-wbm-border text-xs font-bold text-zinc-200 transition">75%</button>
+              <button type="button" onclick="sendQuickCommand(100)" class="py-2 rounded-xl bg-wbm-black hover:bg-wbm-card border border-wbm-green/40 text-xs font-bold text-wbm-green transition">100%</button>
+            </div>
+          </div>
+
+          <div>
+            <span class="block text-[11px] font-semibold uppercase tracking-wider text-zinc-400 mb-2">
+              Comandos Especiais M2M.ino (Seção 5.B):
+            </span>
+            <div class="grid grid-cols-3 gap-2">
+              <button type="button" onclick="sendQuickCommand(150)" class="p-2 rounded-xl bg-wbm-black hover:bg-wbm-card border border-wbm-border text-[11px] text-left text-zinc-300 transition">
+                <strong class="text-sky-400 font-mono">SM 150:</strong> Cancela Alvo
+              </button>
+              <button type="button" onclick="sendQuickCommand(250)" class="p-2 rounded-xl bg-wbm-black hover:bg-wbm-card border border-wbm-border text-[11px] text-left text-zinc-300 transition">
+                <strong class="text-amber-400 font-mono">SM 250:</strong> Reset Erro
+              </button>
+              <button type="button" onclick="sendQuickCommand(500)" class="p-2 rounded-xl bg-wbm-black hover:bg-wbm-card border border-wbm-border text-[11px] text-left text-zinc-300 transition">
+                <strong class="text-wbm-green font-mono">SM 500:</strong> Forçar Atual.
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <label class="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+            <input id="cmd-use-master-topic" type="checkbox" class="accent-[#2ce610] rounded" />
+            <span>Enviar no tópico geral do Mestre (<code class="font-mono">devices/Mestre_&lt;MAC&gt;/cmd</code>)</span>
+          </label>
+          <div class="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onclick="saveManualConfigFromSingleTab()"
+              class="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs transition shadow-md"
+            >
+              💾 Salvar Config
+            </button>
+            <button
+              type="button"
+              onclick="sendManualCommandFromUI()"
+              class="px-6 py-2.5 rounded-xl bg-sky-400 hover:bg-sky-300 text-black font-extrabold text-xs shrink-0 shadow-lg transition"
+            >
+              🚀 Enviar Comando Agora
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SEÇÃO 3.3: GRÁFICOS HISTÓRICOS (SETPOINTS vs POSIÇÃO, CORRENTE DO MOTOR, ERROS & LATÊNCIA) -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <!-- Gráfico 1: Setpoints (sm) vs Posição Real (po) -->
+      <div class="lg:col-span-6 rounded-2xl bg-wbm-surface border border-wbm-border p-5 flex flex-col gap-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 class="text-sm font-bold uppercase tracking-wider text-wbm-green">
+              📈 Gráfico 1 • Histórico de Setpoints (sm) vs Posição Real (po)
+            </h3>
+            <p class="text-xs text-zinc-400">
+              Curva em degrau do Setpoint Comandado (%) comparada à resposta física da válvula (%)
+            </p>
+          </div>
+          <span class="px-2.5 py-1 text-[11px] font-mono rounded-lg bg-wbm-black border border-wbm-border text-zinc-300">
+            0% a 100%
+          </span>
+        </div>
+        <div class="h-[280px] w-full relative">
+          <canvas id="chart-setpoint-pos"></canvas>
+        </div>
+      </div>
+
+      <!-- Gráfico 2: Corrente do Motor (mA) -->
+      <div class="lg:col-span-6 rounded-2xl bg-wbm-surface border border-wbm-border p-5 flex flex-col gap-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 class="text-sm font-bold uppercase tracking-wider text-amber-400">
+              ⚡ Gráfico 2 • Corrente do Motor (mA) • Média, Pico &amp; Limite de Trava
+            </h3>
+            <p class="text-xs text-zinc-400">
+              Sensor ACS712 (20A/30A): Corrente instantânea, Média livre e Trava (Erro 3 &gt; 1,5s)
+            </p>
+          </div>
+          <span id="current-source-badge" class="px-2.5 py-1 text-[11px] font-mono rounded-lg bg-wbm-black border border-wbm-border text-amber-300">
+            Fonte: Analítico / MQTT
+          </span>
+        </div>
+        <div class="h-[280px] w-full relative">
+          <canvas id="chart-motor-current"></canvas>
+        </div>
+      </div>
+
+      <!-- Gráfico 3: Histórico de Erros (0 a 7) -->
+      <div class="lg:col-span-6 rounded-2xl bg-wbm-surface border border-wbm-border p-5 flex flex-col gap-4">
+        <div>
+          <h3 class="text-sm font-bold uppercase tracking-wider text-rose-400">
+            🚨 Gráfico 3 • Histórico de Códigos de Erro (0 a 7) no Tempo
+          </h3>
+          <p class="text-xs text-zinc-400">
+            1=Motor não funcionou | 3=Motor travou | 4=Sensor Posição | 6=Desacoplamento | 7=Timeout LoRa (&gt;5m)
+          </p>
+        </div>
+        <div class="h-[240px] w-full relative">
+          <canvas id="chart-errors-timeline"></canvas>
+        </div>
+      </div>
+
+      <!-- Gráfico 4: Latência de Handshake (ACK 1, 2, 3) -->
+      <div class="lg:col-span-6 rounded-2xl bg-wbm-surface border border-wbm-border p-5 flex flex-col gap-4">
+        <div>
+          <h3 class="text-sm font-bold uppercase tracking-wider text-sky-400">
+            ⏱️ Gráfico 4 • Latência de Handshake (ACK 1, ACK 2 e ACK 3)
+          </h3>
+          <p class="text-xs text-zinc-400">
+            Tempo (segundos) entre Envio (/cmd), Confirmação do Mestre (Status 1) e Posicionamento Final (Status 3)
+          </p>
+        </div>
+        <div class="h-[240px] w-full relative">
+          <canvas id="chart-latency-cycles"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- SEÇÃO 3.4: HISTÓRICO INDIVIDUAL DE COMANDOS, TÓPICOS MQTT E ERROS DO DISPOSITIVO -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <!-- Tabela Individual de Auditoria de Comandos + Log Individual de Eventos -->
+      <div class="lg:col-span-7 rounded-2xl bg-wbm-surface border border-wbm-border p-5 flex flex-col gap-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 class="text-sm font-bold uppercase tracking-wider text-wbm-green">
+              📑 Histórico Individual de Comandos &amp; Confirmação de Posição
+            </h3>
+            <p class="text-xs text-zinc-400">
+              Rastreamento exclusivo deste dispositivo: Envio (<code class="font-mono">/cmd</code>), ACK 1 (Mestre), ACK 2 (Válvula), ACK 3 (Posicionado) e Log de Ciclos
+            </p>
+          </div>
+          <span id="commands-count-badge" class="px-2.5 py-1 text-xs font-mono rounded-lg bg-wbm-black border border-wbm-border text-zinc-300">
+            0 comandos
+          </span>
+        </div>
+
+        <div class="overflow-x-auto max-h-[260px] border border-wbm-border rounded-xl">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead class="sticky top-0 bg-wbm-black text-zinc-400 border-b border-wbm-border uppercase text-[10px]">
+              <tr>
+                <th class="py-2.5 px-3">Data / Hora Envio</th>
+                <th class="py-2.5 px-3">Alvo (SM) / Tópico</th>
+                <th class="py-2.5 px-3">Origem / Tent.</th>
+                <th class="py-2.5 px-3">ACK 1 (Mestre)</th>
+                <th class="py-2.5 px-3">ACK 2 (Válvula)</th>
+                <th class="py-2.5 px-3">ACK 3 / Pos. Final</th>
+                <th class="py-2.5 px-3">Resultado</th>
+              </tr>
+            </thead>
+            <tbody id="commands-audit-tbody" class="divide-y divide-wbm-border bg-[#0b0d0f]"></tbody>
+          </table>
+        </div>
+
+        <!-- Log Individual de Comandos e Ciclos deste Dispositivo -->
+        <div class="flex-1 flex flex-col gap-2 pt-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold uppercase tracking-wider text-sky-400">
+              📜 Log Individual de Comandos &amp; Ciclos deste Dispositivo
+            </span>
+            <span id="device-bot-log-count-badge" class="px-2 py-0.5 text-[11px] font-mono rounded bg-wbm-black border border-wbm-border text-zinc-400">
+              0 eventos
+            </span>
+          </div>
+          <div id="device-bot-log-box" class="p-3 rounded-xl bg-wbm-black border border-wbm-border font-mono text-[11px] text-zinc-200 space-y-1.5 overflow-y-auto max-h-[160px] min-h-[110px]"></div>
+        </div>
+      </div>
+
+      <!-- Histórico Individual de Tópicos MQTT + Tabela de Histórico de Erros -->
+      <div class="lg:col-span-5 rounded-2xl bg-wbm-surface border border-wbm-border p-5 flex flex-col gap-4">
+        <div class="flex-1 flex flex-col gap-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-bold uppercase tracking-wider text-amber-300">
+                📡 Histórico Individual de Tópicos MQTT do Dispositivo
+              </h3>
+              <p class="text-xs text-zinc-400">
+                Pacotes recebidos/enviados em <code class="font-mono">/telemetry</code>, <code class="font-mono">/status</code> e <code class="font-mono">/cmd</code>
+              </p>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <select
+                id="device-topic-type-filter"
+                onchange="setDeviceTopicTypeFilter(this.value)"
+                class="px-2 py-1 text-[10px] font-mono rounded-lg bg-wbm-black border border-wbm-border text-zinc-300 focus:outline-none focus:border-wbm-green"
+              >
+                <option value="ALL">Todos Tópicos</option>
+                <option value="telemetry">/telemetry</option>
+                <option value="status">/status (ACK)</option>
+                <option value="cmd">/cmd</option>
+              </select>
+              <span id="device-topics-count-badge" class="px-2 py-1 text-[10px] font-mono rounded-lg bg-wbm-black border border-wbm-border text-zinc-300">
+                0 pacotes
+              </span>
+            </div>
+          </div>
+          <div id="device-mqtt-feed" class="p-3 rounded-xl bg-wbm-black border border-wbm-border font-mono text-[11px] text-zinc-300 space-y-1.5 overflow-y-auto max-h-[220px] min-h-[170px]"></div>
+        </div>
+
+        <div class="flex flex-col gap-2 pt-1 border-t border-wbm-border">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 class="text-xs font-bold uppercase tracking-wider text-rose-400">
+                ⚠️ Histórico Individual de Erros &amp; Eventos Críticos
+              </h3>
+            </div>
+            <span id="errors-count-badge" class="px-2 py-0.5 text-[11px] font-mono rounded-lg bg-wbm-black border border-wbm-border text-zinc-300">
+              0 ocorrências
+            </span>
+          </div>
+
+          <div class="overflow-x-auto max-h-[155px] border border-wbm-border rounded-xl">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead class="sticky top-0 bg-wbm-black text-zinc-400 border-b border-wbm-border uppercase text-[10px]">
+                <tr>
+                  <th class="py-2 px-3">Início</th>
+                  <th class="py-2 px-3">Erro</th>
+                  <th class="py-2 px-3">Pos / Corrente</th>
+                  <th class="py-2 px-3">Resolução</th>
+                </tr>
+              </thead>
+              <tbody id="errors-history-tbody" class="divide-y divide-wbm-border bg-[#0b0d0f]"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SEÇÃO 3.5: GERADOR DE RELATÓRIO TÉCNICO & INTEGRAÇÃO GOOGLE FORMS WBM -->
+    <section id="report-section" class="rounded-2xl bg-wbm-surface border border-wbm-border p-6 space-y-6">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-wbm-border pb-4">
+        <div>
+          <span class="text-xs font-bold uppercase tracking-wider text-wbm-green">
+            ● Relatório Automatizado de Testes e Acompanhamento
+          </span>
+          <h3 class="text-xl font-extrabold text-white mt-0.5">
+            Laudo Técnico do Equipamento &amp; Envio para Google Forms
+          </h3>
+          <p class="text-xs text-zinc-400">
+            Consolida automaticamente: comandos enviados, confirmações ACK 1/2/3, precisão de posicionamento, corrente do motor (mA) e histórico de erros.
+          </p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 no-print">
+          <button
+            type="button"
+            onclick="regenerateTechnicalReport()"
+            class="px-3.5 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-border text-zinc-200 font-semibold text-xs transition"
+          >
+            🔄 Atualizar Laudo
+          </button>
+          <button
+            type="button"
+            onclick="copyFullTechnicalReport()"
+            class="px-3.5 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-border text-wbm-green font-semibold text-xs transition"
+          >
+            📋 Copiar Texto
+          </button>
+          <button
+            type="button"
+            onclick="window.print()"
+            class="px-3.5 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-border text-zinc-200 font-semibold text-xs transition"
+          >
+            🖨️ Imprimir / PDF
+          </button>
+          <button
+            type="button"
+            onclick="openPrefilledGoogleForm()"
+            class="wbm-btn-primary px-4 py-2.5 rounded-xl font-extrabold text-xs shadow-lg"
+          >
+            Abrir Forms Preenchido ↗
+          </button>
+          <button
+            type="button"
+            onclick="submitDirectlyToGoogleForms()"
+            class="px-4 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 text-wbm-green border border-wbm-green/40 font-bold text-xs transition"
+          >
+            ⚡ Enviar Direto ao Forms
+          </button>
+        </div>
+      </div>
+
+      <div id="acompanhamento-form" class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div class="lg:col-span-8 space-y-4">
+          <div>
+            <label class="block text-xs font-bold uppercase tracking-wider text-zinc-300 mb-1.5">
+              Resumo Técnico dos Testes e Operação (Comandos, Posicionamento, Corrente do Motor e Erros)
+            </label>
+            <textarea
+              id="f-resumo"
+              rows="7"
+              class="w-full px-4 py-3 rounded-xl bg-wbm-black border border-wbm-border text-xs sm:text-sm text-zinc-100 leading-relaxed focus:outline-none focus:border-wbm-green"
+            ></textarea>
+          </div>
+          <div>
+            <label class="block text-xs font-bold uppercase tracking-wider text-zinc-300 mb-1.5">
+              Observações Gerais, Diagnóstico de Hardware e Recomendações
+            </label>
+            <textarea
+              id="f-observacoes"
+              rows="4"
+              class="w-full px-4 py-3 rounded-xl bg-wbm-black border border-wbm-border text-xs sm:text-sm text-zinc-100 leading-relaxed focus:outline-none focus:border-wbm-green"
+            ></textarea>
+          </div>
+        </div>
+
+        <div class="lg:col-span-4 space-y-3.5 bg-wbm-black p-4 rounded-xl border border-wbm-border">
+          <div class="text-xs font-bold uppercase tracking-wider text-wbm-green border-b border-wbm-border pb-2">
+            Parâmetros do Formulário WBM
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] font-semibold text-zinc-400 mb-1">Data e Hora</label>
+              <input id="f-dataHora" type="text" autocomplete="off" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-xs font-mono text-white" />
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-zinc-400 mb-1">Responsável</label>
+              <select id="f-responsavel" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-xs text-white">
+                <option value="Matheus Coutinho">Matheus Coutinho</option>
+                <option value="Helton">Helton</option>
+                <option value="Henrique">Henrique</option>
+                <option value="Matheus Ferreira">Matheus Ferreira</option>
+                <option value="Ronilton">Ronilton</option>
+                <option value="Samuel">Samuel</option>
+                <option value="Vitor">Vitor</option>
+                <option value="Rafael">Rafael</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] font-semibold text-zinc-400 mb-1">Status Operacional</label>
+              <select id="f-statusOperacional" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-xs font-semibold text-white">
+                <option value="Operando normalmente">Operando normalmente</option>
+                <option value="Operando com observacoes">Operando com observacoes</option>
+                <option value="Sem comunicacao">Sem comunicacao</option>
+                <option value="Em manutencao">Em manutencao</option>
+                <option value="Aguardando manutencao">Aguardando manutencao</option>
+                <option value="Aguardando atualizacao">Aguardando atualizacao</option>
+                <option value="Parado">Parado</option>
+                <option value="Desligado">Desligado</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-zinc-400 mb-1">Necessita Ação?</label>
+              <select id="f-necessitaAcao" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-xs font-semibold text-white">
+                <option value="Nao">Nao</option>
+                <option value="Sim, acompanhamento">Sim, acompanhamento</option>
+                <option value="Sim, suporte remoto">Sim, suporte remoto</option>
+                <option value="Sim, visita tecnica">Sim, visita tecnica</option>
+                <option value="Sim, manutencao corretiva">Sim, manutencao corretiva</option>
+                <option value="Sim, atualizacao de firmware">Sim, atualizacao de firmware</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-[11px] font-semibold text-zinc-400 mb-1">Cliente / Local</label>
+            <input id="f-cliente" type="text" autocomplete="off" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-xs text-white" />
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] font-semibold text-zinc-400 mb-1">Equipamento</label>
+              <input id="f-equipamento" type="text" value="Control Flow Gate" autocomplete="off" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-xs text-white" />
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-zinc-400 mb-1">Tipo de Registro</label>
+              <select id="f-tipoRegistro" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-xs text-white">
+                <option value="Acompanhamento">Acompanhamento</option>
+                <option value="Comissionamento">Comissionamento</option>
+                <option value="Suporte Tecnico">Suporte Tecnico</option>
+                <option value="Manutencao Preventiva">Manutencao Preventiva</option>
+                <option value="Manutencao Corretiva">Manutencao Corretiva</option>
+                <option value="Atualizacao de Software/Firmware">Atualizacao de Software/Firmware</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-[11px] font-semibold text-zinc-400 mb-1">Identificação do Dispositivo (Device ID)</label>
+            <input id="f-identificacao" type="text" autocomplete="off" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border text-xs font-mono text-wbm-green" />
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ========================================================================= -->
+  <!-- 4. MODAIS: EQUIPAMENTO, PROTOCOLO M2M E BROKER MQTT                       -->
+  <!-- ========================================================================= -->
+
+  <!-- MODAL: ADICIONAR / CONFIGURAR EQUIPAMENTO CONTROL FLOW -->
+  <div id="device-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-wbm-surface border border-wbm-border rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-wbm-border pb-3">
+        <h3 id="device-modal-title" class="font-bold text-white text-base">Configurar Válvula Control Flow</h3>
+        <button type="button" onclick="closeDeviceModal()" class="text-zinc-400 hover:text-white text-sm">✕</button>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+        <div class="sm:col-span-2">
+          <label class="block font-semibold text-zinc-300 mb-1">Device ID Padrão Control Flow (<code class="font-mono text-wbm-green">Mestre_&lt;MAC_12_HEX&gt;_CF_&lt;N&gt;</code>)</label>
+          <input id="mod-device-id" type="text" placeholder="Mestre_8813BF00CDB0_CF_2" autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-wbm-green focus:border-wbm-green focus:outline-none" />
+        </div>
+
+        <div class="sm:col-span-2">
+          <label class="block font-semibold text-zinc-300 mb-1">Nome de Exibição na Aba</label>
+          <input id="mod-name" type="text" placeholder="Control Flow Gate 1 (ETA Itabirito)" autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-white focus:border-wbm-green focus:outline-none" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">ED do Equipamento (ed: 1 a 20)</label>
+          <input id="mod-ed" type="number" min="1" max="20" value="1" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Modo (md • 2 = Manual)</label>
+          <input id="mod-md" type="number" min="1" max="2" value="2" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Limite Mínimo (%) (0 a 100%)</label>
+          <input id="mod-test-min" type="number" min="0" max="100" value="1" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Limite Máximo (%) (0 a 100%)</label>
+          <input id="mod-test-max" type="number" min="0" max="100" value="100" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Iniciar pelo Limite</label>
+          <select id="mod-test-start-by" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-white">
+            <option value="min">Mínimo</option>
+            <option value="max" selected>Máximo</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Frequência entre envios (min)</label>
+          <input id="mod-test-interval" type="number" step="0.5" min="0.1" value="10" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Tempo máx. espera resposta (min)</label>
+          <input id="mod-test-timeout" type="number" step="0.5" min="0.1" value="2" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Nº de envios até resposta</label>
+          <input id="mod-test-retries" type="number" min="1" max="10" value="3" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Cliente / Local</label>
+          <input id="mod-client" type="text" placeholder="ETA SAAE Itabirito" autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-white" />
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Tipo de Equipamento</label>
+          <select id="mod-type" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-white">
+            <option value="CF">CF - Válvula Control Flow (Nodes 1..20)</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">IP Local da Válvula (Opcional HTTP)</label>
+          <input id="mod-local-ip" type="text" placeholder="Ex: 192.168.4.1 ou vazio" autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block font-semibold text-zinc-300 mb-1">I Nominal (mA)</label>
+            <input id="mod-nom-curr" type="number" value="4000" class="w-full px-2.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+          </div>
+          <div>
+            <label class="block font-semibold text-zinc-300 mb-1">I Trava (mA)</label>
+            <input id="mod-stall-curr" type="number" value="7000" class="w-full px-2.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between pt-3 border-t border-wbm-border">
+        <button type="button" onclick="deleteCurrentDeviceUI()" class="px-3.5 py-2 rounded-xl bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-500/30 text-xs font-semibold">
+          🗑️ Remover Aba
+        </button>
+        <div class="flex gap-2.5">
+          <button type="button" onclick="closeDeviceModal()" class="px-4 py-2 rounded-xl bg-wbm-card text-zinc-300 text-xs font-semibold">Cancelar</button>
+          <button type="button" onclick="saveDeviceModalUI()" class="wbm-btn-primary px-5 py-2 rounded-xl text-xs font-extrabold">Salvar Equipamento</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ARQUITETURA E PROTOCOLO M2M -->
+  <div id="arch-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-wbm-surface border border-wbm-border rounded-2xl max-w-4xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+      <div class="p-5 border-b border-wbm-border flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-extrabold text-white">Especificação da Comunicação M2M • Gateway LoRa ↔ MQTT</h3>
+          <p class="text-xs text-zinc-400">Referência técnica embarcada (declara_componentes.h, M2M.ino, rede_lora.h e setup.ino)</p>
+        </div>
+        <button type="button" onclick="closeMqttArchitectureModal()" class="px-3 py-1.5 rounded-xl bg-wbm-card text-zinc-300 text-xs font-semibold">✕ Fechar</button>
+      </div>
+      <div class="p-6 overflow-y-auto space-y-5 text-xs text-zinc-300 leading-relaxed">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="p-4 rounded-xl bg-wbm-black border border-wbm-border space-y-1.5">
+            <div class="text-wbm-green font-bold uppercase">1. Broker MQTT &amp; Credenciais</div>
+            <div>• <strong>Servidor:</strong> <code class="font-mono">163.176.56.133:1883</code> (TCP direto)</div>
+            <div>• <strong>Usuário / Chave:</strong> <code class="font-mono">wbm_technology</code> / <code class="font-mono">Wbm.technology01</code></div>
+            <div>• <strong>Padrão Control Flow:</strong> <code class="font-mono text-wbm-green">Mestre_&lt;MAC_12_HEX&gt;_CF_&lt;N&gt;</code></div>
+            <div>• <strong>Sincronização Lovable:</strong> Usada apenas para Nome e Local do dispositivo.</div>
+          </div>
+          <div class="p-4 rounded-xl bg-wbm-black border border-wbm-border space-y-1.5">
+            <div class="text-sky-400 font-bold uppercase">2. Filtro Anti-Fantasma (Slots LoRa)</div>
+            <div>• O Gateway Mestre varre slots LoRa e publica <code class="font-mono">md=0, er=7</code> para endereços sem válvula física conectada.</div>
+            <div>• O servidor filtra automaticamente esses slots vazios e só auto-descobre válvulas reais que respondam com modo válido (<code class="font-mono">md=1</code> ou <code class="font-mono">md=2</code>) ou <code class="font-mono">ACK 2 / 3</code>.</div>
+          </div>
+        </div>
+
+        <div class="p-4 rounded-xl bg-wbm-black border border-wbm-border space-y-2">
+          <div class="text-amber-400 font-bold uppercase">3. Estrutura de Tópicos e Handshake de Confirmação (Status "1", "2" e "3")</div>
+          <div>• <strong>Válvulas Control Flow:</strong> <code class="font-mono text-wbm-green">devices/Mestre_&lt;MAC&gt;_CF_&lt;N&gt;/telemetry</code> | <code class="font-mono">/status</code> | <code class="font-mono">/cmd</code></div>
+          <div>• <strong>Status "1":</strong> Comando JSON recebido pelo Mestre via MQTT → Agenda 3x LoRa + 3x Telemetria MQTT.</div>
+          <div>• <strong>Status "2":</strong> Válvula confirmou via LoRa que seu <code class="font-mono">setpointManual</code> interno igualou o setpoint enviado.</div>
+          <div>• <strong>Status "3":</strong> Válvula confirmou via LoRa que sua posição física (<code class="font-mono">po</code>) atingiu o setpoint desejado (<code class="font-mono">sm</code>).</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: LINK DE ACESSO EM OUTROS DISPOSITIVOS (REDE WI-FI / QR CODE / LINK EXTERNO) -->
+  <div id="share-link-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-wbm-surface border border-wbm-border rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-wbm-border pb-3">
+        <div>
+          <h3 class="font-extrabold text-white text-base">🔗 Acessar por um Link em Outro Dispositivo</h3>
+          <p class="text-xs text-zinc-400">Abra o supervisório no celular, tablet ou outro PC apenas clicando no link</p>
+        </div>
+        <button type="button" onclick="closeShareLinkModal()" class="text-zinc-400 hover:text-white text-sm">✕</button>
+      </div>
+
+      <!-- Opção Principal: Link Fixo do Site na Nuvem (Qualquer Celular 4G/5G ou Computador) -->
+      <div class="p-4 rounded-xl bg-wbm-black border border-[#2ce610] space-y-3 text-xs shadow-[0_0_20px_rgba(44,230,16,0.12)]">
+        <div class="flex items-center justify-between">
+          <span class="font-extrabold uppercase tracking-wider text-wbm-green">
+            🌐 1. Site Oficial Online (Acesso de Qualquer Lugar • 4G / 5G / Wi-Fi)
+          </span>
+          <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-[#2ce610]/20 text-[#2ce610]">● Site Ativo 24h</span>
+        </div>
+        <p class="text-zinc-300 leading-relaxed">
+          Este é o link fixo do site na nuvem. Você pode abrir no celular (mesmo no 4G/5G fora da empresa) ou em qualquer outro computador, sem precisar configurar firewall:
+        </p>
+        <div class="flex items-center gap-2">
+          <input
+            id="share-public-url-input"
+            type="text"
+            readonly
+            value="https://samuelmartins-dev1.github.io/wbm-controlflow-site/"
+            class="flex-1 px-3 py-2.5 rounded-xl bg-wbm-surface border border-wbm-green/50 font-mono font-bold text-wbm-green text-xs focus:outline-none"
+          />
+          <button
+            type="button"
+            onclick="copyAccessLink('share-public-url-input')"
+            class="wbm-btn-primary px-4 py-2.5 rounded-xl font-extrabold text-xs shrink-0"
+          >
+            📋 Copiar Link
+          </button>
+          <a
+            href="https://samuelmartins-dev1.github.io/wbm-controlflow-site/"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="px-3.5 py-2.5 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-border text-white font-bold text-xs shrink-0"
+          >
+            Abrir ↗
+          </a>
+        </div>
+
+        <div class="flex items-center gap-4 pt-2">
+          <div class="p-2 bg-white rounded-xl shrink-0">
+            <img id="share-lan-qr-img" src="https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=https%3A%2F%2Fsamuelmartins-dev1.github.io%2Fwbm-controlflow-site%2F" alt="QR Code Site" class="w-24 h-24 object-contain" />
+          </div>
+          <div class="space-y-1.5 text-[11px] text-zinc-300">
+            <div class="font-bold text-white">📱 Escaneie com a Câmera do Celular:</div>
+            <div>Aponte a câmera do celular para este QR Code para abrir o site imediatamente em qualquer rede (4G/5G ou Wi-Fi).</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Opção 2: Link Direto na Rede Local / Wi-Fi -->
+      <div class="p-3.5 rounded-xl bg-wbm-black border border-wbm-border space-y-2 text-xs">
+        <div class="flex items-center justify-between">
+          <span class="font-bold uppercase tracking-wider text-zinc-400">
+            💻 2. Link Local deste Computador (Mesma Rede Wi-Fi)
+          </span>
+        </div>
+        <div class="flex items-center gap-2">
+          <input
+            id="share-lan-url-input"
+            type="text"
+            readonly
+            value="http://192.168.0.125:8090"
+            class="flex-1 px-3 py-2 rounded-xl bg-wbm-surface border border-wbm-border font-mono text-zinc-300 text-xs focus:outline-none"
+          />
+          <button
+            type="button"
+            onclick="copyAccessLink('share-lan-url-input')"
+            class="px-3 py-2 rounded-xl bg-wbm-card hover:bg-zinc-800 border border-wbm-border text-zinc-200 font-bold text-xs shrink-0"
+          >
+            📋 Copiar IP Local
+          </button>
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-1">
+        <button type="button" onclick="closeShareLinkModal()" class="px-4 py-2 rounded-xl bg-wbm-card text-zinc-300 text-xs font-semibold">
+          Fechar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CONFIGURAÇÕES DO BROKER MQTT -->
+  <div id="broker-modal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-wbm-surface border border-wbm-border rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-wbm-border pb-3">
+        <h3 class="font-bold text-white text-base">Configurações do Broker MQTT</h3>
+        <button type="button" onclick="closeBrokerSettingsModal()" class="text-zinc-400 hover:text-white text-sm">✕</button>
+      </div>
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Host / IP do Broker MQTT</label>
+          <input id="brk-host" type="text" value="163.176.56.133" autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Porta TCP</label>
+          <input id="brk-port" type="number" value="1883" autocomplete="off" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Usuário MQTT</label>
+          <input id="brk-user" type="text" value="wbm_technology" autocomplete="off" data-lpignore="true" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+        <div>
+          <label class="block font-semibold text-zinc-300 mb-1">Chave de Acesso MQTT</label>
+          <input id="brk-pass" type="text" value="Wbm.technology01" autocomplete="off" data-lpignore="true" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border font-mono text-white" />
+        </div>
+      </div>
+      <div class="flex justify-end gap-2.5 pt-2">
+        <button type="button" onclick="closeBrokerSettingsModal()" class="px-4 py-2 rounded-xl bg-wbm-card text-zinc-300 text-xs font-semibold">Cancelar</button>
+        <button type="button" onclick="saveBrokerSettingsUI()" class="wbm-btn-primary px-5 py-2 rounded-xl text-xs font-extrabold">Reconectar Broker</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST DE NOTIFICAÇÃO -->
+  <div id="toast" class="hidden fixed bottom-6 right-6 z-50 px-5 py-3.5 rounded-xl bg-wbm-card text-wbm-green text-xs font-bold shadow-2xl border border-wbm-green/40 transition-all">
+    <span id="toast-msg"></span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
