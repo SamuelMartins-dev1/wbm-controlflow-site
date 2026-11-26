@@ -1,0 +1,44 @@
+/* WBM Technology - Estilos Customizados do Supervisório Control Flow */
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #08090a;
+  color: #f3f5f7;
+}
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+.wbm-glow {
+  box-shadow: 0 0 24px rgba(44, 230, 16, 0.16);
+}
+.wbm-btn-primary {
+  background-color: #2ce610;
+  color: #070907;
+  transition: all 0.18s ease;
+}
+.wbm-btn-primary:hover {
+  background-color: #3dff21;
+  box-shadow: 0 0 22px rgba(44, 230, 16, 0.35);
+}
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0c0e10;
+}
+::-webkit-scrollbar-thumb {
+  background: #262e33;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2ce610;
+}
+@media print {
+  header, #device-tabs-bar, .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+}
