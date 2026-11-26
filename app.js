@@ -65,9 +65,13 @@ const state = {
   deviceCommandModes: JSON.parse(localStorage.getItem("wbm_cf_cmd_modes") || "{}"), // { [device_id]: 'auto' | 'manual' }
   singleTabCommandMode: localStorage.getItem("wbm_cf_single_cmd_mode") || "auto", // 'auto' | 'manual'
   globalHistorySubTab: localStorage.getItem("wbm_cf_global_hist_tab") || "logs", // 'logs' | 'topics' | 'audit'
-  globalHistoryDeviceFilter: "ALL",
-  cardHistoryTabs: {}, // { [device_id]: 'topics' | 'commands' }
-  deviceTopicTypeFilter: "ALL", // 'ALL' | 'telemetry' | 'status' | 'cmd'
+  globalHistoryDeviceFilter: localStorage.getItem("wbm_cf_global_hist_dev_filter") || "ALL",
+  cardHistoryTabs: JSON.parse(localStorage.getItem("wbm_cf_card_hist_tabs") || "{}"), // { [device_id]: 'topics' | 'commands' }
+  deviceTopicTypeFilter: localStorage.getItem("wbm_cf_dev_topic_filter") || "ALL", // 'ALL' | 'telemetry' | 'status' | 'cmd'
+  manualSmValues: JSON.parse(localStorage.getItem("wbm_cf_manual_sm_values") || "{}"),
+  useMasterTopic: localStorage.getItem("wbm_cf_use_master_topic") === "true",
+  reportPrefs: JSON.parse(localStorage.getItem("wbm_cf_report_prefs") || "{}"),
+  initialInputsPopulated: false,
   editingConfigJson: false,
   editingBotCardInputs: {},
   currentDetail: {
@@ -238,6 +242,7 @@ const cloudEngine = {
   token: null,
   userId: null,
   devicesMap: {},
+  rawMetadataByDevice: {},
   liveMap: {},
   botLogs: JSON.parse(localStorage.getItem("wbm_cf_cloud_bot_logs") || "[]"),
   recentFeed: [],
@@ -271,8 +276,8 @@ function initCloudDevicesFromStorage() {
         current_source: "Nuvem WBM / MQTT",
         is_moving: false,
         pos_verify_state: "idle",
-        test_running: false,
-        test_phase: "Parado",
+        test_running: Boolean(d.test_running),
+        test_phase: d.test_running ? "Retomando automação..." : "Parado",
         test_next_in_sec: 0,
         test_cycles_done: 0,
         test_cycles_ok: 0,
@@ -376,6 +381,42 @@ async function cloudFinalizePendingBridgeCommands(deviceId = null) {
   } catch (_) {}
 }
 
+async function persistCloudDeviceToSupabase(devId) {
+  try {
+    const cfg = cloudEngine.devicesMap[devId];
+    if (!cfg) return;
+    const baseMeta = (cloudEngine.rawMetadataByDevice[devId] && typeof cloudEngine.rawMetadataByDevice[devId] === "object")
+      ? { ...cloudEngine.rawMetadataByDevice[devId] }
+      : {};
+    baseMeta.wbm_cf_config = {
+      ed: Number(cfg.ed ?? 1),
+      md: Number(cfg.md ?? 2),
+      test_min: Number(cfg.test_min ?? 1),
+      test_max: Number(cfg.test_max ?? 100),
+      test_start_by: cfg.test_start_by || "max",
+      test_interval_min: Number(cfg.test_interval_min ?? 10.0),
+      test_timeout_min: Number(cfg.test_timeout_min ?? 2.0),
+      test_max_retries: Number(cfg.test_max_retries ?? 3),
+      test_running: Boolean(cfg.test_running),
+      test_current_use_max: cfg.test_current_use_max ?? null,
+      test_next_target_epoch_ms: cfg.test_next_target_epoch_ms ?? null,
+      nominal_current_ma: Number(cfg.nominal_current_ma ?? 4000),
+      peak_current_ma: Number(cfg.peak_current_ma ?? 6500),
+      stall_current_ma: Number(cfg.stall_current_ma ?? 7000),
+      local_ip: cfg.local_ip || "",
+      updated_at: cfg.updated_at || new Date().toISOString()
+    };
+    cloudEngine.rawMetadataByDevice[devId] = baseMeta;
+    await cloudRestPatch(`devices?device_id=eq.${encodeURIComponent(devId)}`, {
+      name: cfg.name || devId,
+      location: cfg.client || "WBM Technology",
+      valve_address: Number(cfg.ed ?? 1),
+      node: Number(cfg.ed ?? 1),
+      metadata: baseMeta
+    });
+  } catch (_) {}
+}
+
 function mapSupabaseCmdToAudit(c) {
   const cmdObj = c.command || {};
   const sm = Number(cmdObj.sm ?? 0);
@@ -429,6 +470,7 @@ async function cloudBuildState() {
     if (!m) continue;
     const mac = m[1].toUpperCase();
     const ed = Number(row.valve_address || row.node || m[2] || 1);
+    const hadLocal = Boolean(cloudEngine.devicesMap[devId]);
     const existing = cloudEngine.devicesMap[devId] || {
       device_id: devId,
       type: "CF",
@@ -444,10 +486,40 @@ async function cloudBuildState() {
       test_start_by: "max",
       test_interval_min: 10.0,
       test_timeout_min: 2.0,
-      test_max_retries: 3
+      test_max_retries: 3,
+      test_running: false
     };
     if (row.name) existing.name = row.name;
     if (row.location) existing.client = row.location;
+
+    if (row.metadata && typeof row.metadata === "object") {
+      cloudEngine.rawMetadataByDevice[devId] = row.metadata;
+      const cfCfg = row.metadata.wbm_cf_config;
+      if (cfCfg && typeof cfCfg === "object") {
+        const cloudTs = cfCfg.updated_at ? new Date(cfCfg.updated_at).getTime() : 0;
+        const localTs = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
+        if (!hadLocal || !localTs || cloudTs > localTs) {
+          Object.assign(existing, {
+            ed: Number(cfCfg.ed ?? existing.ed ?? ed),
+            md: Number(cfCfg.md ?? existing.md ?? 2),
+            test_min: Number(cfCfg.test_min ?? existing.test_min ?? 1),
+            test_max: Number(cfCfg.test_max ?? existing.test_max ?? 100),
+            test_start_by: cfCfg.test_start_by || existing.test_start_by || "max",
+            test_interval_min: Number(cfCfg.test_interval_min ?? existing.test_interval_min ?? 10.0),
+            test_timeout_min: Number(cfCfg.test_timeout_min ?? existing.test_timeout_min ?? 2.0),
+            test_max_retries: Number(cfCfg.test_max_retries ?? existing.test_max_retries ?? 3),
+            test_running: Boolean(cfCfg.test_running ?? existing.test_running),
+            test_current_use_max: cfCfg.test_current_use_max ?? existing.test_current_use_max ?? null,
+            test_next_target_epoch_ms: cfCfg.test_next_target_epoch_ms ?? existing.test_next_target_epoch_ms ?? null,
+            nominal_current_ma: Number(cfCfg.nominal_current_ma ?? existing.nominal_current_ma ?? 4000),
+            peak_current_ma: Number(cfCfg.peak_current_ma ?? existing.peak_current_ma ?? 6500),
+            stall_current_ma: Number(cfCfg.stall_current_ma ?? existing.stall_current_ma ?? 7000),
+            local_ip: cfCfg.local_ip ?? existing.local_ip ?? "",
+            updated_at: cfCfg.updated_at || existing.updated_at
+          });
+        }
+      }
+    }
     cloudEngine.devicesMap[devId] = existing;
   }
   saveCloudDevicesToStorage();
@@ -521,6 +593,11 @@ async function cloudBuildState() {
     if (st.po !== null && st.sm === null) {
       st.sm = st.po;
       st.pos_verify_state = "synced";
+    }
+    if (d.test_running && !cloudEngine.botTimers[devId]) {
+      startCloudBotTimer(devId, null, true);
+    } else if (cloudEngine.botTimers[devId]) {
+      st.test_running = true;
     }
   }
 
@@ -748,10 +825,9 @@ async function cloudSendCommand(body) {
   };
 }
 
-function startCloudBotTimer(devId, params = null) {
+function startCloudBotTimer(devId, params = null, isResume = false) {
   if (params) {
     cloudEngine.devicesMap[devId] = { ...(cloudEngine.devicesMap[devId] || {}), ...params, device_id: devId };
-    saveCloudDevicesToStorage();
   }
   stopCloudBotTimer(devId, null, true);
 
@@ -759,16 +835,26 @@ function startCloudBotTimer(devId, params = null) {
   const st = cloudEngine.liveMap[devId];
   if (!cfg || !st) return;
 
+  cfg.test_running = true;
+  if (!isResume || cfg.test_current_use_max === undefined || cfg.test_current_use_max === null) {
+    cfg.test_current_use_max = (cfg.test_start_by || "max") === "max";
+  }
+  cfg.updated_at = new Date().toISOString();
+  saveCloudDevicesToStorage();
+  persistCloudDeviceToSupabase(devId);
+
   const runSessionId = Date.now();
   cloudEngine.botTimers[devId] = { sessionId: runSessionId };
   st.test_running = true;
-  st.test_cycles_done = 0;
-  st.test_cycles_ok = 0;
-  st.test_cycles_fail = 0;
+  if (!isResume) {
+    st.test_cycles_done = 0;
+    st.test_cycles_ok = 0;
+    st.test_cycles_fail = 0;
+  }
 
-  let useMax = (cfg.test_start_by || "max") === "max";
+  let useMax = Boolean(cfg.test_current_use_max);
   pushCloudBotLog(
-    `🤖 [${devId} | ED ${cfg.ed}] Bot iniciado! Limites: ${cfg.test_min ?? 1}% a ${cfg.test_max ?? 100}% (Iniciando por: ${useMax ? "Máximo" : "Mínimo"} | Freq: ${cfg.test_interval_min ?? 10} min | Timeout: ${cfg.test_timeout_min ?? 2} min | Nº Envios: ${cfg.test_max_retries ?? 3}).`,
+    `🤖 [${devId} | ED ${cfg.ed}] Bot ${isResume ? "retomado automaticamente" : "iniciado"}! Limites: ${cfg.test_min ?? 1}% a ${cfg.test_max ?? 100}% (Iniciando por: ${useMax ? "Máximo" : "Mínimo"} | Freq: ${cfg.test_interval_min ?? 10} min | Timeout: ${cfg.test_timeout_min ?? 2} min | Nº Envios: ${cfg.test_max_retries ?? 3}).`,
     devId
   );
 
@@ -776,93 +862,124 @@ function startCloudBotTimer(devId, params = null) {
   const isStillRunning = () => st.test_running && cloudEngine.botTimers[devId]?.sessionId === runSessionId;
 
   (async () => {
-    while (isStillRunning()) {
-      const c = cloudEngine.devicesMap[devId] || cfg;
-      const vMin = Number(c.test_min ?? 1);
-      const vMax = Number(c.test_max ?? 100);
-      const intervalSec = Math.max(5, Math.round(Number(c.test_interval_min ?? 10) * 60));
-      const timeoutSec = Math.max(5, Math.round(Number(c.test_timeout_min ?? 2) * 60));
-      const maxRetries = Math.max(1, Number(c.test_max_retries ?? 3));
-      const targetSm = useMax ? vMax : vMin;
-      let confirmed = false;
-
-      // Envia exatamente até maxRetries (Nº de envios configurado) aguardando confirmação
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    if (isResume && cfg.test_next_target_epoch_ms && cfg.test_next_target_epoch_ms > Date.now()) {
+      const nextSmResume = useMax ? Number(cfg.test_max ?? 100) : Number(cfg.test_min ?? 1);
+      while (Date.now() < cfg.test_next_target_epoch_ms) {
         if (!isStillRunning()) break;
-        st.test_phase = `Enviando ${targetSm}% (Tentativa ${attempt}/${maxRetries})`;
-        const sendEpochMs = Date.now();
-        try {
-          const res = await cloudSendCommand({
-            device_id: devId,
-            ed: c.ed,
-            md: c.md,
-            sm: targetSm,
-            silentLog: true
-          });
-          const msgJson = JSON.stringify(res.result.payload);
-          if (attempt === 1) {
-            pushCloudBotLog(`[${devId}] Envio 1/${maxRetries} -> Tópico: ${res.result.topic} | Alvo: ${targetSm}% | Msg: ${msgJson}`, devId);
-          } else {
-            pushCloudBotLog(`[${devId}] Reenvio ${attempt}/${maxRetries} -> Alvo: ${targetSm}% | Msg: ${msgJson}`, devId);
-          }
-        } catch (err) {
-          pushCloudBotLog(`[${devId}] Erro ao enviar tentativa ${attempt}/${maxRetries}: ${err.message}`, devId);
-        }
-
-        // Aguarda resposta durante timeoutSec segundos
-        const waitStartMs = Date.now();
-        while (Date.now() - waitStartMs < timeoutSec * 1000) {
-          if (!isStillRunning()) break;
-          const rem = Math.max(0, Math.ceil((timeoutSec * 1000 - (Date.now() - waitStartMs)) / 1000));
-          const mins = String(Math.floor(rem / 60)).padStart(2, "0");
-          const segs = String(rem % 60).padStart(2, "0");
-          st.test_phase = `Aguardando resp. (${mins}:${segs}) • Alvo ${targetSm}% [Tent. ${attempt}/${maxRetries}]`;
-
-          const lastSeenMs = st.last_seen ? new Date(st.last_seen).getTime() : 0;
-          if (lastSeenMs >= sendEpochMs - 3000 && isPositionConfirmed(targetSm, st.po)) {
-            confirmed = true;
-            break;
-          }
-          await sleepMs(1000);
-        }
-
-        if (confirmed) {
-          pushCloudBotLog(`[${devId}] CONFIRMADO: Válvula recebida e posicionada em ${st.po}% (Alvo: ${targetSm}%)!`, devId);
-          break;
-        } else if (isStillRunning()) {
-          const posLida = st.po !== null && st.po !== undefined ? `${st.po}%` : "Sem resposta";
-          pushCloudBotLog(
-            `[${devId}] Tentativa ${attempt}/${maxRetries} sem confirmação em ${c.test_timeout_min ?? 2} min. Posição: ${posLida} (Esperado: ${targetSm}%)`,
-            devId
-          );
-        }
-      }
-
-      if (!isStillRunning()) break;
-
-      st.test_cycles_done = (st.test_cycles_done || 0) + 1;
-      if (confirmed) {
-        st.pos_verify_state = "confirmed";
-        st.test_cycles_ok = (st.test_cycles_ok || 0) + 1;
-        pushCloudBotLog(`[${devId}] Ciclo em ${targetSm}% concluído com sucesso. Alternando próximo limite...`, devId);
-      } else {
-        st.pos_verify_state = "divergent";
-        st.test_cycles_fail = (st.test_cycles_fail || 0) + 1;
-        pushCloudBotLog(`[${devId}] ALERTA: Não posicionou em ${targetSm}% após ${maxRetries} envio(s). Alternando para próximo limite...`, devId);
-      }
-
-      useMax = !useMax;
-      const nextSm = useMax ? vMax : vMin;
-      pushCloudBotLog(`[${devId}] Aguardando ${c.test_interval_min ?? 10} min para o próximo envio (Próximo alvo: ${nextSm}%)...`, devId);
-
-      const nextTargetMs = Date.now() + intervalSec * 1000;
-      while (Date.now() < nextTargetMs) {
-        if (!isStillRunning()) break;
-        const rem = Math.max(0, Math.ceil((nextTargetMs - Date.now()) / 1000));
+        const rem = Math.max(0, Math.ceil((cfg.test_next_target_epoch_ms - Date.now()) / 1000));
         const mins = String(Math.floor(rem / 60)).padStart(2, "0");
         const segs = String(rem % 60).padStart(2, "0");
-        st.test_phase = `Próximo envio (${nextSm}%) em ${mins}:${segs}`;
+        st.test_phase = `Próximo envio (${nextSmResume}%) em ${mins}:${segs}`;
         await sleepMs(1000);
+      }
+    }
+    cfg.test_next_target_epoch_ms = null;
+    saveCloudDevicesToStorage();
+
+    while (isStillRunning()) {
+      try {
+        const c = cloudEngine.devicesMap[devId] || cfg;
+        const vMin = Number(c.test_min ?? 1);
+        const vMax = Number(c.test_max ?? 100);
+        const intervalSec = Math.max(5, Math.round(Number(c.test_interval_min ?? 10) * 60));
+        const timeoutSec = Math.max(5, Math.round(Number(c.test_timeout_min ?? 2) * 60));
+        const maxRetries = Math.max(1, Number(c.test_max_retries ?? 3));
+        const targetSm = useMax ? vMax : vMin;
+        let confirmed = false;
+
+        // Envia exatamente até maxRetries (Nº de envios configurado) aguardando confirmação
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          if (!isStillRunning()) break;
+          st.test_phase = `Enviando ${targetSm}% (Tentativa ${attempt}/${maxRetries})`;
+          const sendEpochMs = Date.now();
+          try {
+            const res = await cloudSendCommand({
+              device_id: devId,
+              ed: c.ed,
+              md: c.md,
+              sm: targetSm,
+              silentLog: true
+            });
+            const msgJson = JSON.stringify(res.result.payload);
+            if (attempt === 1) {
+              pushCloudBotLog(`[${devId}] Envio 1/${maxRetries} -> Tópico: ${res.result.topic} | Alvo: ${targetSm}% | Msg: ${msgJson}`, devId);
+            } else {
+              pushCloudBotLog(`[${devId}] Reenvio ${attempt}/${maxRetries} -> Alvo: ${targetSm}% | Msg: ${msgJson}`, devId);
+            }
+          } catch (err) {
+            pushCloudBotLog(`[${devId}] Erro ao enviar tentativa ${attempt}/${maxRetries}: ${err.message}`, devId);
+          }
+
+          // Aguarda resposta durante timeoutSec segundos
+          const waitStartMs = Date.now();
+          while (Date.now() - waitStartMs < timeoutSec * 1000) {
+            if (!isStillRunning()) break;
+            const rem = Math.max(0, Math.ceil((timeoutSec * 1000 - (Date.now() - waitStartMs)) / 1000));
+            const mins = String(Math.floor(rem / 60)).padStart(2, "0");
+            const segs = String(rem % 60).padStart(2, "0");
+            st.test_phase = `Aguardando resp. (${mins}:${segs}) • Alvo ${targetSm}% [Tent. ${attempt}/${maxRetries}]`;
+
+            const lastSeenMs = st.last_seen ? new Date(st.last_seen).getTime() : 0;
+            if (lastSeenMs >= sendEpochMs - 3000 && isPositionConfirmed(targetSm, st.po)) {
+              confirmed = true;
+              break;
+            }
+            await sleepMs(1000);
+          }
+
+          if (confirmed) {
+            pushCloudBotLog(`[${devId}] CONFIRMADO: Válvula recebida e posicionada em ${st.po}% (Alvo: ${targetSm}%)!`, devId);
+            break;
+          } else if (isStillRunning()) {
+            const posLida = st.po !== null && st.po !== undefined ? `${st.po}%` : "Sem resposta";
+            pushCloudBotLog(
+              `[${devId}] Tentativa ${attempt}/${maxRetries} sem confirmação em ${c.test_timeout_min ?? 2} min. Posição: ${posLida} (Esperado: ${targetSm}%)`,
+              devId
+            );
+          }
+        }
+
+        if (!isStillRunning()) break;
+
+        st.test_cycles_done = (st.test_cycles_done || 0) + 1;
+        if (confirmed) {
+          st.pos_verify_state = "confirmed";
+          st.test_cycles_ok = (st.test_cycles_ok || 0) + 1;
+          pushCloudBotLog(`[${devId}] Ciclo em ${targetSm}% concluído com sucesso. Alternando próximo limite...`, devId);
+        } else {
+          st.pos_verify_state = "divergent";
+          st.test_cycles_fail = (st.test_cycles_fail || 0) + 1;
+          pushCloudBotLog(`[${devId}] ALERTA: Não posicionou em ${targetSm}% após ${maxRetries} envio(s). Alternando para próximo limite...`, devId);
+        }
+
+        useMax = !useMax;
+        const nextSm = useMax ? vMax : vMin;
+        const nextTargetMs = Date.now() + intervalSec * 1000;
+        if (cloudEngine.devicesMap[devId]) {
+          cloudEngine.devicesMap[devId].test_current_use_max = useMax;
+          cloudEngine.devicesMap[devId].test_next_target_epoch_ms = nextTargetMs;
+          cloudEngine.devicesMap[devId].updated_at = new Date().toISOString();
+          saveCloudDevicesToStorage();
+          persistCloudDeviceToSupabase(devId);
+        }
+
+        pushCloudBotLog(`[${devId}] Aguardando ${c.test_interval_min ?? 10} min para o próximo envio (Próximo alvo: ${nextSm}%)...`, devId);
+
+        while (Date.now() < nextTargetMs) {
+          if (!isStillRunning()) break;
+          const rem = Math.max(0, Math.ceil((nextTargetMs - Date.now()) / 1000));
+          const mins = String(Math.floor(rem / 60)).padStart(2, "0");
+          const segs = String(rem % 60).padStart(2, "0");
+          st.test_phase = `Próximo envio (${nextSm}%) em ${mins}:${segs}`;
+          await sleepMs(1000);
+        }
+        if (cloudEngine.devicesMap[devId]) {
+          cloudEngine.devicesMap[devId].test_next_target_epoch_ms = null;
+          saveCloudDevicesToStorage();
+        }
+      } catch (loopErr) {
+        pushCloudBotLog(`[${devId}] Erro transitório no ciclo automático (${loopErr?.message || loopErr}). Mantendo Bot ativo...`, devId);
+        await sleepMs(3000);
       }
     }
   })();
@@ -871,7 +988,14 @@ function startCloudBotTimer(devId, params = null) {
 function stopCloudBotTimer(devId, params = null, silent = false) {
   if (params) {
     cloudEngine.devicesMap[devId] = { ...(cloudEngine.devicesMap[devId] || {}), ...params, device_id: devId };
+  }
+  if (!silent && cloudEngine.devicesMap[devId]) {
+    cloudEngine.devicesMap[devId].test_running = false;
+    cloudEngine.devicesMap[devId].test_current_use_max = null;
+    cloudEngine.devicesMap[devId].test_next_target_epoch_ms = null;
+    cloudEngine.devicesMap[devId].updated_at = new Date().toISOString();
     saveCloudDevicesToStorage();
+    persistCloudDeviceToSupabase(devId);
   }
   delete cloudEngine.botTimers[devId];
   const st = cloudEngine.liveMap[devId];
@@ -931,8 +1055,18 @@ async function apiPost(path, body) {
   }
   if (path === "/api/devices") {
     const devId = (body.device_id || "").trim();
-    cloudEngine.devicesMap[devId] = { ...(cloudEngine.devicesMap[devId] || {}), ...body, device_id: devId };
+    const existing = cloudEngine.devicesMap[devId] || {};
+    cloudEngine.devicesMap[devId] = {
+      ...existing,
+      ...body,
+      device_id: devId,
+      test_running: body.test_running !== undefined ? Boolean(body.test_running) : Boolean(existing.test_running),
+      test_current_use_max: body.test_current_use_max !== undefined ? body.test_current_use_max : (existing.test_current_use_max ?? null),
+      test_next_target_epoch_ms: body.test_next_target_epoch_ms !== undefined ? body.test_next_target_epoch_ms : (existing.test_next_target_epoch_ms ?? null),
+      updated_at: new Date().toISOString()
+    };
     saveCloudDevicesToStorage();
+    persistCloudDeviceToSupabase(devId);
     return { ok: true, device: cloudEngine.devicesMap[devId] };
   }
   if (path === "/api/devices/delete") {
@@ -1018,7 +1152,9 @@ async function pollServerState() {
     }
 
     if (state.selectedDeviceId && state.activeView === "device") {
-      await refreshSelectedDeviceDetail(false);
+      const shouldPopulate = !state.initialInputsPopulated;
+      state.initialInputsPopulated = true;
+      await refreshSelectedDeviceDetail(shouldPopulate);
     }
   } catch (err) {
     console.warn("Poll error:", err);
@@ -1433,22 +1569,22 @@ function renderAutomationBotTab() {
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">ED do Equipamento (ed)</label>
-                  <input id="bcard-ed-${safeId}" type="number" min="1" max="20" value="${dev.ed ?? 1}" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+                  <input id="bcard-ed-${safeId}" type="number" min="1" max="20" value="${dev.ed ?? 1}" oninput="scheduleAutoSaveBotCardInput('${devId}', '${safeId}')" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
                 </div>
 
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">Modo (md • padrão 2)</label>
-                  <input id="bcard-md-${safeId}" type="number" min="1" max="2" value="${dev.md ?? 2}" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+                  <input id="bcard-md-${safeId}" type="number" min="1" max="2" value="${dev.md ?? 2}" oninput="scheduleAutoSaveBotCardInput('${devId}', '${safeId}')" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
                 </div>
 
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">Limite Mínimo (%)</label>
-                  <input id="bcard-min-${safeId}" type="number" min="0" max="100" value="${dev.test_min ?? 1}" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono font-bold text-sky-400 text-center focus:border-wbm-green focus:outline-none" />
+                  <input id="bcard-min-${safeId}" type="number" min="0" max="100" value="${dev.test_min ?? 1}" oninput="scheduleAutoSaveBotCardInput('${devId}', '${safeId}')" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono font-bold text-sky-400 text-center focus:border-wbm-green focus:outline-none" />
                 </div>
 
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">Limite Máximo (%)</label>
-                  <input id="bcard-max-${safeId}" type="number" min="0" max="100" value="${dev.test_max ?? 100}" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono font-bold text-wbm-green text-center focus:border-wbm-green focus:outline-none" />
+                  <input id="bcard-max-${safeId}" type="number" min="0" max="100" value="${dev.test_max ?? 100}" oninput="scheduleAutoSaveBotCardInput('${devId}', '${safeId}')" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono font-bold text-wbm-green text-center focus:border-wbm-green focus:outline-none" />
                 </div>
 
                 <div>
@@ -1461,17 +1597,17 @@ function renderAutomationBotTab() {
 
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">Frequência Envio (MIN)</label>
-                  <input id="bcard-int-${safeId}" type="number" step="0.5" min="0.1" value="${dev.test_interval_min ?? 10}" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+                  <input id="bcard-int-${safeId}" type="number" step="0.5" min="0.1" value="${dev.test_interval_min ?? 10}" oninput="scheduleAutoSaveBotCardInput('${devId}', '${safeId}')" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
                 </div>
 
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">Tempo Máx. Resp. (MIN)</label>
-                  <input id="bcard-ver-${safeId}" type="number" step="0.5" min="0.1" value="${dev.test_timeout_min ?? 2}" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+                  <input id="bcard-ver-${safeId}" type="number" step="0.5" min="0.1" value="${dev.test_timeout_min ?? 2}" oninput="scheduleAutoSaveBotCardInput('${devId}', '${safeId}')" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
                 </div>
 
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">Nº Envios até Resposta</label>
-                  <input id="bcard-tent-${safeId}" type="number" min="1" max="10" value="${dev.test_max_retries ?? 3}" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
+                  <input id="bcard-tent-${safeId}" type="number" min="1" max="10" value="${dev.test_max_retries ?? 3}" oninput="scheduleAutoSaveBotCardInput('${devId}', '${safeId}')" onchange="autoSaveBotCardInput('${devId}', '${safeId}')" class="w-full px-2.5 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-wbm-green focus:outline-none" />
                 </div>
               </div>
             </div>
@@ -1535,7 +1671,7 @@ function renderAutomationBotTab() {
               <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label class="block text-[11px] font-semibold text-zinc-300 mb-1">ED do Equipamento (ed)</label>
-                  <input id="mcard-ed-${safeId}" type="number" min="1" max="20" value="${dev.ed ?? 1}" onchange="saveManualBotCardDevice('${devId}', '${safeId}', true)" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-sky-400 focus:outline-none" />
+                  <input id="mcard-ed-${safeId}" type="number" min="1" max="20" value="${dev.ed ?? 1}" oninput="scheduleAutoSaveManualCard('${devId}', '${safeId}')" onchange="saveManualBotCardDevice('${devId}', '${safeId}', true)" class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-wbm-border font-mono text-white text-center focus:border-sky-400 focus:outline-none" />
                 </div>
 
                 <div>
@@ -1553,8 +1689,9 @@ function renderAutomationBotTab() {
                     type="number"
                     min="0"
                     max="1000"
-                    value="${sm !== null && sm <= 100 ? sm : 100}"
+                    value="${state.manualSmValues[devId] ?? (sm !== null && sm <= 100 ? sm : 100)}"
                     placeholder="Digite o valor (0 a 100%)"
+                    oninput="saveManualSmValue('${devId}', this.value)"
                     onkeydown="if(event.key==='Enter'){event.preventDefault();sendManualBotCardCommand('${devId}','${safeId}');}"
                     class="w-full px-3 py-2 rounded-lg bg-wbm-surface border border-sky-400/50 font-mono font-extrabold text-sm text-sky-300 text-center focus:border-sky-400 focus:outline-none"
                   />
@@ -1687,6 +1824,7 @@ function renderAutomationBotTab() {
 
 function setCardHistoryTab(devId, tab) {
   state.cardHistoryTabs[devId] = tab;
+  localStorage.setItem("wbm_cf_card_hist_tabs", JSON.stringify(state.cardHistoryTabs));
   renderAutomationBotTab();
 }
 
@@ -1782,6 +1920,7 @@ function setGlobalHistorySubTab(subTab) {
 
 function setGlobalHistoryDeviceFilter(devId) {
   state.globalHistoryDeviceFilter = devId || "ALL";
+  localStorage.setItem("wbm_cf_global_hist_dev_filter", state.globalHistoryDeviceFilter);
   renderGlobalHistoryPanel();
 }
 
@@ -2096,6 +2235,40 @@ async function saveManualBotCardDevice(devId, safeId, silent = false) {
   }
 }
 
+const __autoSaveTimers = {};
+
+function saveManualSmValue(devId, val) {
+  if (!devId) return;
+  state.manualSmValues[devId] = val;
+  localStorage.setItem("wbm_cf_manual_sm_values", JSON.stringify(state.manualSmValues));
+}
+
+function scheduleAutoSaveBotCardInput(devId, safeId) {
+  clearTimeout(__autoSaveTimers[`bcard_${safeId}`]);
+  __autoSaveTimers[`bcard_${safeId}`] = setTimeout(() => {
+    autoSaveBotCardInput(devId, safeId);
+  }, 400);
+}
+
+function scheduleAutoSaveManualCard(devId, safeId) {
+  clearTimeout(__autoSaveTimers[`mcard_${safeId}`]);
+  __autoSaveTimers[`mcard_${safeId}`] = setTimeout(() => {
+    saveManualBotCardDevice(devId, safeId, true);
+  }, 400);
+}
+
+function scheduleSaveTestConfigOnly() {
+  clearTimeout(__autoSaveTimers["single_test"]);
+  __autoSaveTimers["single_test"] = setTimeout(() => {
+    saveTestConfigOnly(true);
+  }, 400);
+}
+
+function saveReportPref(key, value) {
+  state.reportPrefs[key] = value;
+  localStorage.setItem("wbm_cf_report_prefs", JSON.stringify(state.reportPrefs));
+}
+
 async function autoSaveBotCardInput(devId, safeId) {
   try {
     const payload = readBotCardInputs(devId, safeId);
@@ -2377,6 +2550,15 @@ function renderCurrentDeviceHeaderAndKPIs(detail, populateInputs) {
     const mdVal = cfg.md ?? 2;
     if (document.getElementById("cmd-ed")) document.getElementById("cmd-ed").value = edVal;
     if (document.getElementById("cmd-md")) document.getElementById("cmd-md").value = mdVal;
+    if (document.getElementById("cmd-sm") && state.manualSmValues[devId] !== undefined) {
+      document.getElementById("cmd-sm").value = state.manualSmValues[devId];
+    }
+    if (document.getElementById("cmd-use-master-topic")) {
+      document.getElementById("cmd-use-master-topic").checked = Boolean(state.useMasterTopic);
+    }
+    if (document.getElementById("device-topic-type-filter")) {
+      document.getElementById("device-topic-type-filter").value = state.deviceTopicTypeFilter || "ALL";
+    }
     if (document.getElementById("auto-ed")) document.getElementById("auto-ed").value = edVal;
     if (document.getElementById("auto-md")) document.getElementById("auto-md").value = mdVal;
     document.getElementById("test-min").value = cfg.test_min ?? 1;
@@ -2804,6 +2986,7 @@ function renderErrorsHistoryTable(detail) {
 
 function setDeviceTopicTypeFilter(filterType) {
   state.deviceTopicTypeFilter = filterType || "ALL";
+  localStorage.setItem("wbm_cf_dev_topic_filter", state.deviceTopicTypeFilter);
   renderDeviceMqttFeed(state.selectedDeviceId, state.currentDetail);
 }
 
@@ -2977,7 +3160,7 @@ function readTestParamsFromUI() {
   };
 }
 
-async function saveManualConfigFromSingleTab() {
+async function saveManualConfigFromSingleTab(silent = false) {
   if (!state.selectedDeviceId) return;
   const ed = Number(document.getElementById("cmd-ed")?.value || 1);
   const md = Number(document.getElementById("cmd-md")?.value || 2);
@@ -2991,12 +3174,19 @@ async function saveManualConfigFromSingleTab() {
     ed,
     md
   };
+  const devObj = state.devices.find(d => d.device_id === state.selectedDeviceId);
+  if (devObj) {
+    devObj.ed = ed;
+    devObj.md = md;
+  }
   try {
     await apiPost("/api/devices", cfg);
-    showToast(`💾 [${state.selectedDeviceId}] Configuração salva em config.json (ED: ${ed} | Modo: ${md})!`);
-    await pollServerState();
+    if (!silent) {
+      showToast(`💾 [${state.selectedDeviceId}] Configuração salva em config.json (ED: ${ed} | Modo: ${md})!`);
+      await pollServerState();
+    }
   } catch (err) {
-    showToast(`Erro ao salvar configuração: ${err.message}`);
+    if (!silent) showToast(`Erro ao salvar configuração: ${err.message}`);
   }
 }
 
@@ -3532,9 +3722,38 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("f-resumo")?.addEventListener("input", () => { state.reportDirty = true; });
   document.getElementById("f-observacoes")?.addEventListener("input", () => { state.reportDirty = true; });
 
+  // Restaura e auto-salva preferências do formulário de relatório e tópico mestre
+  const fResp = document.getElementById("f-responsavel");
+  const fTipo = document.getElementById("f-tipoRegistro");
+  const chkMaster = document.getElementById("cmd-use-master-topic");
+  const cmdSm = document.getElementById("cmd-sm");
+  if (fResp && state.reportPrefs.responsavel) fResp.value = state.reportPrefs.responsavel;
+  if (fTipo && state.reportPrefs.tipoRegistro) fTipo.value = state.reportPrefs.tipoRegistro;
+  if (chkMaster) chkMaster.checked = Boolean(state.useMasterTopic);
+
+  fResp?.addEventListener("change", e => saveReportPref("responsavel", e.target.value));
+  fTipo?.addEventListener("change", e => saveReportPref("tipoRegistro", e.target.value));
+  chkMaster?.addEventListener("change", e => {
+    state.useMasterTopic = Boolean(e.target.checked);
+    localStorage.setItem("wbm_cf_use_master_topic", String(state.useMasterTopic));
+  });
+  cmdSm?.addEventListener("input", e => {
+    if (state.selectedDeviceId) saveManualSmValue(state.selectedDeviceId, e.target.value);
+  });
+
   updateSingleTabCommandModeUI();
   pollServerState();
   // Sempre que abrir ou atualizar a página, sincroniza automaticamente Nome/Local com o Lovable
   syncWithSupabaseCloud(true);
   setInterval(pollServerState, 2500);
+
+  // Ao voltar para a aba/app depois de muito tempo fora, sincroniza imediatamente o estado e retoma os Bots ativos
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      pollServerState();
+    }
+  });
+  window.addEventListener("focus", () => {
+    pollServerState();
+  });
 });
